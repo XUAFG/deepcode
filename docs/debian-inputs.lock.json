@@ -26,7 +26,7 @@
         {
           "package": "proot",
           "version": "5.1.107.92",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.92_x86_64.deb",
+          "url": "https://mirror.mwt.me/termux/main/pool/main/p/proot/proot_5.1.107.92_x86_64.deb",
           "sha256": "70236632826c30ec0245082b633bbc7ef1e9fa5531bd51bd4f20231bfcdc999b"
         }
       ]
@@ -54,7 +54,7 @@
         {
           "package": "proot",
           "version": "5.1.107.92",
-          "url": "https://packages.termux.dev/apt/termux-main/pool/main/p/proot/proot_5.1.107.92_aarch64.deb",
+          "url": "https://mirror.mwt.me/termux/main/pool/main/p/proot/proot_5.1.107.92_aarch64.deb",
           "sha256": "1f1c983509701f6826f568482c70673ee453a9ba38c9f5fa445a472d6b7524e9"
         }
       ]
