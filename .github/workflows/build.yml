@@ -1,0 +1,89 @@
+name: build-deepcode
+
+# 云端从源码构建 DeepCode 完整 ARM64 APK（含 Codex / 语音 / Debian 插件）。
+# 唯一构建入口是仓库内的 scripts/first-build.py（见 docs/FIRST-DEPLOY.md），
+# 6 个阶段：plugins -> inputs -> native -> assemble -> verify -> apk。
+# 产物：artifacts/deepcode-source-arm64.apk + artifacts/first-build.json。
+on:
+  workflow_dispatch:
+
+# 只读权限：构建只使用公开固定输入，不需要写仓库。
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    name: first-build arm64 (codex/first-deploy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Checkout codex/first-deploy
+        uses: actions/checkout@v4
+        with:
+          ref: codex/first-deploy
+          fetch-depth: 0
+
+      - name: Record source commit
+        run: |
+          echo "SOURCE_COMMIT=$(git rev-parse HEAD)"
+          git log -1 --oneline
+          git status --short
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up JDK 17 (temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build xz-utils unzip
+          cmake --version | head -1
+          ninja --version
+          xz --version | head -1
+
+      # 让引导脚本把 JDK/SDK 装进本 checkout 的 .tools/（可写、可复现），
+      # 而不是复用 runner 预装的只读 Android SDK：清掉预置的 JAVA_HOME/ANDROID_HOME，
+      # 之后 source scripts/env.sh 会把它们指向 .tools/ 下的同一套路径。
+      - name: Bootstrap Android host
+        run: |
+          unset JAVA_HOME ANDROID_HOME ANDROID_SDK_ROOT
+          python3 scripts/bootstrap-android-host.py --install --accept-licenses
+          source scripts/env.sh
+          python3 scripts/bootstrap-android-host.py --check
+
+      - name: First build (plugins -> inputs -> native -> assemble -> verify -> apk)
+        run: |
+          unset JAVA_HOME ANDROID_HOME ANDROID_SDK_ROOT
+          source scripts/env.sh
+          python3 scripts/first-build.py
+
+      - name: Show artifacts
+        if: always()
+        run: |
+          echo "=== artifacts/ ==="
+          ls -la artifacts || true
+          echo "=== any build logs ==="
+          find . -maxdepth 3 -name "*.log" -size +0 2>/dev/null | head -20 || true
+
+      - name: Upload APK and receipt
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepcode-source-arm64
+          path: |
+            artifacts/deepcode-source-arm64.apk
+            artifacts/first-build.json
+          if-no-files-found: error
+          retention-days: 30
