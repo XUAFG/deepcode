@@ -25,11 +25,29 @@ def patch_agent_loop(source):
 ''' + anchor)
 
 
+LINK_OR_COPY_HELPER = '''/**
+* dsh-mobile Android publication: app-private directories reject link(2)
+* (SELinux EACCES/EPERM; some kernels also report ENOTSUP/EXDEV), which used to
+* fail every composer attachment with ATTACHMENT_WRITE_FAILED. Publish the
+* already-durable bytes by copying them instead. EEXIST still propagates so the
+* callers keep their digest-verified deduplication path.
+*/
+async function dshMobilePublishLinkOrCopy(source, target) {
+\ttry {
+\t\tawait link(source, target);
+\t} catch (error) {
+\t\tif (!(error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM" || error.code === "ENOTSUP" || error.code === "EXDEV"))) throw error;
+\t\tawait copyFile(source, target, constants.COPYFILE_EXCL);
+\t}
+}
+'''
+
+
 def patch_attachment_store(source):
     anchor = '\t\tawait ensureDurableDirectory(home, parse(home).root);'
     assert source.count(anchor) == 1, 'Unsupported attachment durability boundary'
     source = source.replace('import { chmod,', 'import { realpath, chmod,', 1)
-    return source.replace(anchor, '''\t\tif (process.platform === "android") {
+    source = source.replace(anchor, '''\t\tif (process.platform === "android") {
 \t\t\t// Android owns ancestors above filesDir; applications cannot fsync /data.
 \t\t\tconst prefix = process.env.TERMUX__PREFIX;
 \t\t\tif (!prefix) throw new Error("Android attachment runtime prefix missing");
@@ -42,3 +60,19 @@ def patch_attachment_store(source):
 \t\t} else {
 ''' + anchor + '''
 \t\t}''')
+
+    # link(2) -> copyFile fallback: Android app-private dirs reject link(2), so the
+    # content-addressed publish needs the same escape hatch the session-persistence
+    # and codex-image-input overlays already carry (see docs/AGENTS/RUNTIME-PATCHES.md).
+    import_anchor = ', writeFile } from "node:fs/promises";'
+    assert source.count(import_anchor) == 1, 'Unsupported attachment fs/promises import'
+    source = source.replace(import_anchor, ', writeFile, copyFile } from "node:fs/promises";', 1)
+
+    helper_anchor = 'async function publishImmutableAlias(root, source, target, sha256) {'
+    assert source.count(helper_anchor) == 1, 'Unsupported attachment alias publisher'
+    source = source.replace(helper_anchor, LINK_OR_COPY_HELPER + helper_anchor, 1)
+
+    for call in ('\t\t\tawait link(source, target);', '\t\t\tawait link(staged.path, target);'):
+        assert source.count(call) == 1, 'Unsupported attachment link site: ' + repr(call)
+        source = source.replace(call, call.replace('await link(', 'await dshMobilePublishLinkOrCopy('), 1)
+    return source
