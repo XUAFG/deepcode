@@ -30,7 +30,8 @@ PLUGINS = ['dsh-shell-termux', 'dsh-client-ui-responsive',
     'dsh-android-fs','dsh-android-debian','dsh-android-codex','dsh-codex-live',
     'dsh-speech-services','dsh-startup-appearance','dsh-xiaomi-remote',
     'dsh-client-input-gamepad','dsh-client-ui-voice-deck','dsh-client-fold-transition',
-    'dsh-android-voice-input','dsh-android-performance','dsh-task-notifications']]]
+    'dsh-android-voice-input','dsh-android-performance','dsh-task-notifications',
+    'dsh-jev-gate']]]
 
 
 def digest(path):

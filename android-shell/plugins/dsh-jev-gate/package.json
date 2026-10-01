@@ -1,0 +1,21 @@
+{
+  "name": "dsh-jev-gate",
+  "description": "Machine approval answerer: delegates low-risk sandbox-escalation prompts to TypeSafe's Jev (System One) decision model so the agent keeps running instead of waiting for a human, and fails closed to the human prompt on anything it cannot confidently clear",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./policy": "./lib/policy.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib"
+  ],
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node --test"
+  }
+}

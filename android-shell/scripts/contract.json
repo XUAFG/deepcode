@@ -79,6 +79,11 @@
       "id": "android-vdisplay",
       "pkg": "@dsh-android/dsh-android-vdisplay",
       "repo": "plugins/dsh-android-vdisplay"
+    },
+    {
+      "id": "jev-gate",
+      "pkg": "dsh-jev-gate",
+      "repo": "plugins/dsh-jev-gate"
     }
   ],
   "symbols": [

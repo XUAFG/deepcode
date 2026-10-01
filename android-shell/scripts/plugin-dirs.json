@@ -10,7 +10,8 @@
     "plugins/dsh-android-file-open",
     "plugins/dsh-model-capability",
     "plugins/dsh-android-browser",
-    "plugins/dsh-android-vdisplay"
+    "plugins/dsh-android-vdisplay",
+    "plugins/dsh-jev-gate"
   ],
   "externals": [
     "vendor/dsh-undo-savepoint",

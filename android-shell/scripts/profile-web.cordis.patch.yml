@@ -132,3 +132,21 @@
 - insert:
     - id: android-vdisplay
       name: '@dsh-android/dsh-android-vdisplay'
+
+# 审批接缝的机器应答者（本轮新增，非上游）：dsh-jev-gate——部署里原本只有**人类**应答者，
+# 每次沙箱升级都要停下等人点确认。本插件在 approval/request 上挂一个更早的应答者，
+# 用 TypeSafe 的 Jev（System One 判断模型）判定该命令是否安全；只有高置信度「干净」才返回
+# allowed-once，其余一律落回 next() —— 即与现在完全一致的人类确认。
+#
+# 两处接缝分工：tools/pre-execute 只做**被动观察**（永远 return next()，不改变任何决策），
+# 用于按 callId 记住工具参数；approval/request 才是决策点——它的事件只带 toolName/callId/reason，
+# 刻意不含参数（"arguments are not duplicated here"），故必须靠 callId 关联才能看到命令本身。
+# 本地拒绝列表先于网络调用执行：类别性危险的命令绝不外发给第三方判定，也不为空输入付费。
+# 默认 mode: 'observe'（只记录、不授权）；改用 $DSH_HOME/jev-gate.json 写 {"mode":"enforce"} 启用，
+# 无需重打包。详见该插件 README。
+- insert:
+    - id: jev-gate
+      name: dsh-jev-gate
+      config:
+        mode: observe
+        provider: openrouter
