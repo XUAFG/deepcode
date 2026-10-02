@@ -11,7 +11,7 @@ from lib.session_selection_patch import patch_session_selection
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'android-shell/scripts'))
 from retired_plugins import retire_tree
-BASE_SHA = {'x86_64':'8409612269a56e7529da6527e153744c161a235be6679b2d3d5219d17f63be79', 'arm64':'ed24dfcc004725dee4c41e6b9d139fa10e97455af270187794f838327caec28f'}
+BASE_SHA = {'x86_64':'8409612269a56e7529da6527e153744c161a235be6679b2d3d5219d17f63be79', 'arm64':'90a4f445b6cf543fc08e2260f088c30e496cc8698261edefa4aee60e2d9652e7'}
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('--abi', choices=sorted(BASE_SHA), default='x86_64')
 p.add_argument('--archive', type=pathlib.Path, required=True)
@@ -21,7 +21,7 @@ a = p.parse_args()
 assert hashlib.file_digest(a.archive.open('rb'),'sha256').hexdigest() == BASE_SHA[a.abi]
 profile = a.runtime/'home/.dsh/profiles/web'
 engine = a.runtime/'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai'
-assert json.loads((engine/'dsh-agent-loop/package.json').read_text())['version'] == '0.1.5-rc.1'
+assert json.loads((engine/'dsh-agent-loop/package.json').read_text())['version'] == '0.2.0-rc.2'
 assert not (a.runtime/'.deepcode-overlay').exists(), 'Use a fresh extraction, not a previously patched runtime'
 retire_tree(a.runtime)
 composition = (ROOT/'android-shell/scripts/profile-web.cordis.patch.yml').read_text()
@@ -59,7 +59,7 @@ composition += '\n- id: fs-sandbox\n  disabled: true\n'
 spec=importlib.util.spec_from_file_location('deck',ROOT/'scripts/patch-voice-deck.py')
 deck=importlib.util.module_from_spec(spec);spec.loader.exec_module(deck)
 for name in ['dsh-api-session-controller','dsh-client-ui-renderer','dsh-client-ui-conversation','dsh-client-ui-workspace']:
-    f=engine/name/'lib/client.js';f.write_text(deck.patch(name,f.read_text(),'0.1.5-rc.1'))
+    f=engine/name/'lib/client.js';f.write_text(deck.patch(name,f.read_text(),'0.2.0-rc.2'))
 f=engine/'dsh-agent-loop/lib/index.js'; f.write_text(patch_agent_loop(f.read_text()))
 f=engine/'dsh-attachment-local/lib/index.js'; f.write_text(patch_attachment_store(f.read_text()))
 for package, patcher in [('dsh-session-format-v1-to-v2', patch_legacy_codex_migration),
@@ -88,5 +88,5 @@ for asset,source in {
 for script in ['stage-speech-services.py','stage-startup-appearance.py','stage-task-notifications.py','stage-xiaomi-remote.py']:
     spec=importlib.util.spec_from_file_location('stage',ROOT/'scripts'/script)
     m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);m.stage(a.assets)
-(a.runtime/'.deepcode-overlay').write_text(json.dumps({'upstream':'c7746e89d38462bd695ca3d72c8874dc5278958d','engine':'0.1.5-rc.1','abi':a.abi,'sourceSha256':BASE_SHA[a.abi]})+'\n')
+(a.runtime/'.deepcode-overlay').write_text(json.dumps({'upstream':'c7746e89d38462bd695ca3d72c8874dc5278958d','engine':'0.2.0-rc.2','abi':a.abi,'sourceSha256':BASE_SHA[a.abi]})+'\n')
 print('Staged DeepCode plugins over verified upstream', a.abi, 'runtime')
