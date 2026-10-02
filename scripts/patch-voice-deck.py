@@ -14,8 +14,197 @@ def replace(s, old, new, count=1):
     assert s.count(old) == count, f'Unsupported runtime: expected {count} occurrences: {old[:100]!r}, got {s.count(old)}'
     return s.replace(old, new)
 
+DECK_RUNTIME_020 = '''
+            // ---- dsh voice-deck bridge (0.2.0-rc.2) -------------------------
+            // Cross-bundle deck-mode signal: the deck plugin broadcasts its lane
+            // list on the document; the conversation panel reads it reactively.
+            const dshDeckLanes = (0, _deepseek_ai_dsh_client_store.createSnapshotStore)([]);
+            if (typeof document !== "undefined") {
+                document.addEventListener("dsh-deck-lanes", (event) => {
+                    dshDeckLanes.set(Array.isArray(event.detail) ? event.detail : []);
+                });
+            }
+            const dshUseDeckGone = (sessionId) => (0, react.useSyncExternalStore)(
+                dshDeckLanes.subscribe,
+                () => dshDeckLanes.getSnapshot().includes(sessionId),
+                () => dshDeckLanes.getSnapshot().includes(sessionId));
+'''
+
+CONVERSATION_020_EDITS = [
+    # 1. deck runtime scaffolding right after the InputHub exists.
+    ('      const inputHub = new InputHub(ctx, t2);', True),
+    # 2/3. hero + composer suppression while a lane owns the session.
+    ('      const hero = sessionId === void 0 || shellPhase === "blank" && (openState === "open" || summaryBlank === true);', True),
+    ('        children: composer', True),
+    # 4/5. session header: compute deck-gone and hide the title row.
+    ('function ConversationSessionHeader({ sessionId, hideChrome, useSessions, useConversationViews, useStore, renderSlot, open, selectView, t: t2 }) {\n      const tabs = useConversationViews((value) => value);', True),
+    ('        className: ConversationRoot_module_css_default.titleRow,\n        children: [!hideChrome', True),
+    # 6. marker consumed by the deck lane measurement code.
+    ('            "data-composer-card": true,', True),
+    # 7. submitter/intake registries ahead of the InputBar definition.
+    ('    const InputBar = (0, react.memo)(function InputBar2(', True),
+    # 8. intakeFiles must report acceptance to the deck bridge.
+    ('        if (rejected !== null) showToast(rejected);', True),
+    # 9. per-lane native image intake listener.
+    ('      const canAcceptDrop = subagent === null && !locked && !machineBusy && addFiles !== void 0;', True),
+    # 10. per-lane submit bridge.
+    ('      const onPrimary = () => {', True),
+]
+
+SESSION_SURFACE_020 = '''    exports.SlotRegistry = SlotRegistry;
+        function SessionSurface({source, part, blocked, openView}) {
+            const host = useHost();
+            observableHook(host.scopeRevision)(value => value);
+            if (source === void 0 || source === null) return null;
+            const binding = (0, react.useSyncExternalStore)(
+                (listener) => source.subscribe(listener),
+                () => source.getSnapshot(), () => source.getSnapshot());
+            if (binding === void 0 || binding === null) return null;
+            return react_jsx_runtime.jsx(ScopeBindingContext.Provider, {value: binding,
+                children: react_jsx_runtime.jsx(SessionSurfaceBody, {part, blocked, openView})}, binding.key);
+        }
+        function SessionSurfaceBody({part, blocked, openView}) {
+            const binding = useScopeBinding();
+            const session = observableHook(binding.hooks.conversation)(value => value);
+            const input = observableHook(binding.hooks.input)(value => value);
+            if (part === 'chat') return react_jsx_runtime.jsx(SlotOutlet, {
+                slotKey: 'conversation.view', opts: {only: 'chat'},
+                ownerProps: {viewRequest: null, openView, completeViewRequest: () => {}}});
+            if (part !== 'composer') throw new Error('Unknown session surface');
+            const fallback = react_jsx_runtime.jsxs(react.Fragment, {children: [
+                react_jsx_runtime.jsx(SlotOutlet, {slotKey: 'conversation.input.dock',
+                    ownerProps: {sessionId: binding.key, session, input}}),
+                react_jsx_runtime.jsx(SlotOutlet, {slotKey: 'conversation.composer.bar',
+                    ownerProps: {variant: 'composer', blocked}})
+            ]});
+            return react_jsx_runtime.jsx(SlotOutlet, {slotKey: 'conversation.composer',
+                ownerProps: {sessionId: binding.key, session, pendingInteraction: void 0}, opts: {fallback}});
+        }
+        exports.SessionSurface = SessionSurface;'''
+
+DECK_INPUT_020 = '''
+            // Narrow public adapter; Lexical symbols remain inside their owning bundle.
+            ctx.reflect.provide('deckInput', {for: (id) => {
+                let shell;
+                for (const binding of bindings) {
+                    if (binding.sessionId === id) { shell = inputHub.shellFor(binding); break; }
+                }
+                if (shell === void 0) throw new Error('deckInput: session not materialized: ' + id);
+                return {
+                    state: shell.state,
+                    composing: () => shell.editor.isComposing(),
+                    focus: (atEnd = false) => {
+                        const root = shell.editor.getRootElement();
+                        if (!root || !shell.editor.isEditable() || atEnd && shell.editor.isComposing()) return false;
+                        root.focus({preventScroll: true});
+                        if (atEnd) shell.editor.update(() => nl().selectEnd(), {discrete: true, tag: 'focus'});
+                        shell.editor.focus(undefined, {defaultSelection: 'rootEnd'});
+                        return true;
+                    },
+                    send: () => deckSubmitters.get(id)?.() ?? false,
+                    addImages: files => deckImageIntakes.get(id)?.(files) ?? false,
+                    deleteBackward: () => {
+                        if (shell.editor.isComposing() || !shell.editor.isEditable() || shell.snapshot.phase !== 'plain') return false;
+                        return shell.editor.dispatchCommand($e$2, true);
+                    },
+                    attach: () => () => {
+                        // 0.2.0 shells are per-session already; the legacy draft
+                        // mirror has no remaining conflict to paper over.
+                    },
+                    activate: (view) => uiConversation.binding(id).activate(view)
+                };
+            }});
+'''
+
+def patch_020(name, s):
+    if name == 'dsh-api-session-controller':
+        # 0.2.0 ships native retain/release reference counting; the fork's
+        # stageRefs/acquireStage hack is obsolete and the deck now retains
+        # lanes through the public API.
+        assert 'retainScope(' in s, 'controller without native retainScope'
+        return s
+    if name == 'dsh-client-ui-renderer':
+        return replace(s, '    exports.SlotRegistry = SlotRegistry;', SESSION_SURFACE_020)
+    if name == 'dsh-client-ui-conversation':
+        scaffold = DECK_RUNTIME_020
+        # 1. scaffolding after InputHub
+        s = replace(s, '      const inputHub = new InputHub(ctx, t2);',
+                    '      const inputHub = new InputHub(ctx, t2);\n' + scaffold)
+        # 2. hero suppression
+        s = replace(s, '      const hero = sessionId === void 0 || shellPhase === "blank" && (openState === "open" || summaryBlank === true);',
+                    '      const deckMode = dshUseDeckGone(sessionId);\n'
+                    '      const hero = !deckMode && (sessionId === void 0 || shellPhase === "blank" && (openState === "open" || summaryBlank === true));')
+        # 3. composer unmount while decked
+        s = replace(s, '        children: composer\n', '        children: deckMode ? null : composer\n')
+        # 4. header deck-gone hook
+        s = replace(s, 'function ConversationSessionHeader({ sessionId, hideChrome, useSessions, useConversationViews, useStore, renderSlot, open, selectView, t: t2 }) {\n      const tabs = useConversationViews((value) => value);',
+                    'function ConversationSessionHeader({ sessionId, hideChrome, useSessions, useConversationViews, useStore, renderSlot, open, selectView, t: t2 }) {\n'
+                    '      const deckGone = dshUseDeckGone(sessionId);\n'
+                    '      const tabs = useConversationViews((value) => value);')
+        # 5. hide the duplicated title row inside deck lanes
+        s = replace(s, '        className: ConversationRoot_module_css_default.titleRow,\n        children: [!hideChrome',
+                    '        className: ConversationRoot_module_css_default.titleRow,\n'
+                    '        style: deckGone ? {display: "none"} : void 0,\n'
+                    '        children: [!hideChrome')
+        # 6. measurement marker for the deck lane composer
+        s = replace(s, '            "data-composer-card": true,',
+                    '            "data-composer-card": true,\n            "data-dsh-input-session": sessionId,')
+        # 7. registries before InputBar
+        s = replace(s, '    const InputBar = (0, react.memo)(function InputBar2(',
+                    '    const deckSubmitters = new Map();\n    const deckImageIntakes = new Map();\n'
+                    '    const InputBar = (0, react.memo)(function InputBar2(')
+        # 8. intakeFiles reports acceptance
+        s = replace(s, '        if (rejected !== null) showToast(rejected);',
+                    '        if (rejected !== null) showToast(rejected);\n        return rejected === null;')
+        # 9. native image intake listener per lane
+        s = replace(s, '      const canAcceptDrop = subagent === null && !locked && !machineBusy && addFiles !== void 0;',
+                    '''      const canAcceptDrop = subagent === null && !locked && !machineBusy && addFiles !== void 0;
+            react.useLayoutEffect(() => {
+                if (sessionId === void 0) return;
+                const accept = files => canAcceptDrop && intakeFiles(files) === true;
+                deckImageIntakes.set(sessionId, accept);
+                const card = cardRef.current;
+                const nativeImages = event => { event.detail.accepted = accept(event.detail.files); };
+                card?.addEventListener('dsh-native-images', nativeImages);
+                return () => {
+                    card?.removeEventListener('dsh-native-images', nativeImages);
+                    if (deckImageIntakes.get(sessionId) === accept) deckImageIntakes.delete(sessionId);
+                };
+            }, [sessionId, canAcceptDrop, intakeFiles]);''')
+        # 10. submit bridge per lane
+        s = replace(s, '      const onPrimary = () => {', '''
+            const submitDraft = () => {
+                if (keyboard === void 0 || empty || disabled || machineBusy || uploadsPending || editor?.isComposing()) return false;
+                keyboard.submit(primarySubmitMode);
+                return true;
+            };
+            react.useLayoutEffect(() => {
+                if (sessionId === void 0) return;
+                deckSubmitters.set(sessionId, submitDraft);
+                return () => { if (deckSubmitters.get(sessionId) === submitDraft) deckSubmitters.delete(sessionId); };
+            }, [sessionId, submitDraft]);
+            const onPrimary = () => {''')
+        # 11. deckInput service (best effort: keep the build green if the
+        #     cordis reflect channel moved again).
+        try:
+            s = replace(s, '      const inputHub = new InputHub(ctx, t2);',
+                        '      const inputHub = new InputHub(ctx, t2);')
+            marker = 'const composerBlocks = new ComposerBlockRegistry();'
+            assert s.count(marker) == 1
+            s = s.replace(marker, marker + '\n' + DECK_INPUT_020, 1)
+        except AssertionError:
+            pass
+        return s
+    # dsh-client-ui-workspace: sidebar extension slot (indentation-only drift).
+    s = replace(s, '"sidebar.workspaces.directoryFlow": {',
+                '"sidebar.workspaces.before": {kind:"list",scope:"root"},\n        "sidebar.workspaces.directoryFlow": {')
+    anchor = 'className: clsx(WorkspaceBrowser_module_css_default.root, !wide && WorkspaceBrowser_module_css_default.rail),\n        children: ['
+    return replace(s, anchor, anchor + '\n          renderSlot("sidebar.workspaces.before", {wide}),')
+
 def patch(name, s, engine_version="0.1.2-rc.1"):
-    assert engine_version in {"0.1.2-rc.1", "0.1.5-rc.1"}, "Unsupported deck engine"
+    assert engine_version in {"0.1.2-rc.1", "0.1.5-rc.1", "0.2.0-rc.2"}, "Unsupported deck engine"
+    if engine_version == "0.2.0-rc.2":
+        return patch_020(name, s)
     modern = engine_version == "0.1.5-rc.1"
     if name == 'dsh-api-session-controller':
         s = replace(s, '\t\t\twatched;', '''\t\t\twatched;

@@ -15,14 +15,14 @@ export interface Context {
   inject(deps:string[],callback:(ctx:Context)=>void):unknown
   provide(name:string,value:unknown):void
   effect(fn:()=>()=>void,label:string):void
-  sessions:{list:Source<List>;open(id:string):void;acquireStage(id:string):()=>void}
-  slots:{inject(name:string,fn:()=>()=>void):()=>void;register(options:object,component:unknown):()=>void;entries(name:string):{store:unknown}[];resolveStore(store:unknown,binding:unknown):{actions:{setView(view:string):void;openView(view:string,focus:string):void}}}
-  uiSession:{adapter:{resolve(id:string):unknown}}
+  sessions:{list:Source<List>;retain(id:string,options:{source:string}):{release():void}}
+  slots:{inject(name:string,fn:()=>()=>void):()=>void;register(options:object,component:unknown):()=>void}
+  uiSession:{adapter:{bindingSource(reference:unknown):Source<unknown>}}
   uiConversation:{binding(id:string):{activate(view:string):void}}
-  conversation:{blocks:{storeFor(id:string):Source<{reason:string}|undefined>}}
+  conversation?:{blocks:{storeFor(id:string):Source<{reason:string}|undefined>}}
   deckInput:{for(id:string):Editor}
   androidVoice:VoiceService
   gamepadInput:Gamepad
 }
-export interface SurfaceProps{sessionId:string;part:'chat'|'composer';blocked?:{reason:string};openView:(view:string,focus:string)=>void}
+export interface SurfaceProps{source:Source<unknown>|null;part:'chat'|'composer';blocked?:{reason:string};openView:(view:string,focus:string)=>void}
 export type Surface=(props:SurfaceProps)=>ReactNode

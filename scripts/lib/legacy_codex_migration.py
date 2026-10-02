@@ -8,7 +8,7 @@ no request, prompt text, original event timestamp or message order is invented.
 """
 import hashlib
 
-BASE_SHA = '23950e7d0366d1bf5f46c9db69cbbfc64c0cfaab786147bdd40d044cefc74584'
+BASE_SHA = 'b2b401d880bb000017ba8663c4448b501427b23a1cd2f9fdb04cb7ec9d763eff'
 ANCHOR = '\tif (!Array.isArray(sources)) {\n\t\tif (pending !== void 0) throw refusal'
 INSERT = '''\t// DeepCode legacy Relay activity is an independent, non-streamed message.
 \tconst activity = data["message"];
@@ -37,7 +37,7 @@ def patch_legacy_codex_migration(source: str) -> str:
         raise ValueError('Unsupported dsh-session-format-v1-to-v2 source; re-audit before patching')
     return source.replace(ANCHOR, INSERT + ANCHOR, 1)
 
-LIVE_BASE_SHA = '2d35e1e0ed497af569d5735fc590187de1568489cfe60d070b5f61330cd5a338'
+LIVE_BASE_SHA = '0dc56fb447e9046fc25995bcd08dbac26e832eba6e9eb583ef49d26467c27cd7'
 LIVE_EDITS = [
     ('\tprompt = "";\n\tconstructor(input)', '\tprompt = "";\n\tlegacyLiveUser;\n\tlegacyOpenTurn;\n\tlegacyProvider;\n\tconstructor(input)'),
     ('\ttransformEvent(event, context) {\n\t\tif (event.seq !== this.mapping.length)', '''\ttransformEvent(event, context) {

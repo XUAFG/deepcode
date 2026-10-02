@@ -61,18 +61,8 @@ def patch_attachment_store(source):
 ''' + anchor + '''
 \t\t}''')
 
-    # link(2) -> copyFile fallback: Android app-private dirs reject link(2), so the
-    # content-addressed publish needs the same escape hatch the session-persistence
-    # and codex-image-input overlays already carry (see docs/AGENTS/RUNTIME-PATCHES.md).
-    import_anchor = ', writeFile } from "node:fs/promises";'
-    assert source.count(import_anchor) == 1, 'Unsupported attachment fs/promises import'
-    source = source.replace(import_anchor, ', writeFile, copyFile } from "node:fs/promises";', 1)
-
-    helper_anchor = 'async function publishImmutableAlias(root, source, target, sha256) {'
-    assert source.count(helper_anchor) == 1, 'Unsupported attachment alias publisher'
-    source = source.replace(helper_anchor, LINK_OR_COPY_HELPER + helper_anchor, 1)
-
-    for call in ('\t\t\tawait link(source, target);', '\t\t\tawait link(staged.path, target);'):
-        assert source.count(call) == 1, 'Unsupported attachment link site: ' + repr(call)
-        source = source.replace(call, call.replace('await link(', 'await dshMobilePublishLinkOrCopy('), 1)
+    # 0.2.0-rc.2 note: upstream absorbed the Android link(2) fallback natively
+    # (link->rename with dsh-mobile comments in publishImmutableAlias / stage
+    # paths), so the link->copyFile helper and its call-site rewrites below
+    # are no longer applied. Only the durability boundary above remains.
     return source

@@ -1,4 +1,4 @@
-import {memo,useEffect,useLayoutEffect,useRef,useSyncExternalStore} from 'react'
+import {memo,useEffect,useLayoutEffect,useRef,useState,useSyncExternalStore} from 'react'
 import {SessionSurface} from '@deepseek-ai/dsh-client-ui-renderer'
 import type {Context,Source,Intent,VoiceService,Gamepad} from './contracts.ts'
 import {adjacent,assign,type DeckState} from './state.ts'
@@ -6,6 +6,7 @@ import {css} from './style.ts'
 import {attachChatSwipe} from './chat-swipe.ts'
 
 const KEY='dsh.voice-deck.controller.v2'
+const ABSENT_BLOCK:Source<{reason:string}|undefined>={getSnapshot:()=>undefined,subscribe:()=>()=>{}}
 function useSource<T>(source:Source<T>):T{return useSyncExternalStore(fn=>source.subscribe(fn),()=>source.getSnapshot())}
 export const inject=['layout','slots','sessions','uiSession','uiConversation','conversation','deckInput']
 export function apply(ctx:Context) {
@@ -43,11 +44,16 @@ export function apply(ctx:Context) {
   const publish=(next:Partial<DeckState>)=>{state={...state,...next};localStorage.setItem(KEY,JSON.stringify({...state,notice:''}));listeners.forEach(fn=>fn())}
   const notice=(text:string)=>publish({notice:text})
   const activeId=()=>state.lanes[state.active]
+  // 0.2.0 controller: lanes are held open through the public retain/release
+  // reference count (the old acquireStage hack is gone upstream).
   const syncLeases=()=>{
     const list=ctx.sessions.list.getSnapshot()
     const ids=new Set(mounted && state.enabled?state.lanes.filter((id):id is string=>!!id && !!list.byId[id]):[])
     for(const [id,release] of leases)if(!ids.has(id)){release();leases.delete(id)}
-    for(const id of ids)if(!leases.has(id))leases.set(id,ctx.sessions.acquireStage(id))
+    for(const id of ids)if(!leases.has(id)){
+      const reference=ctx.sessions.retain(id,{source:'voice-deck'})
+      leases.set(id,()=>reference.release())
+    }
   }
   const hardwareKeyboard=()=>{
     const bridge=(window as unknown as {androidBridge?:{hasHardwareKeyboard?:()=>boolean}}).androidBridge
@@ -77,17 +83,19 @@ export function apply(ctx:Context) {
   }
   const setView=(view:string,id=ctx.sessions.list.getSnapshot().current,focusTarget?:string)=>{
     if(!id)return
-    const entry=ctx.slots.entries('conversation.session')[0];if(!entry)return
-    const binding=ctx.uiSession.adapter.resolve(id)
-    const store=ctx.slots.resolveStore(entry.store,binding)
+    // 0.2.0 activates conversation view targets natively; the old per-session
+    // UI store hack (resolveStore + actions.setView/openView) is gone upstream.
     ctx.uiConversation.binding(id).activate(view)
-    if(focusTarget!==undefined)store.actions.openView(view,focusTarget);else store.actions.setView(view)
+    void focusTarget
   }
   const open=()=>{
     if(disposed||!state.enabled)return
     const list=ctx.sessions.list.getSnapshot();const id=list.current??state.lanes.find(id=>id && list.byId[id])??list.ids[0]
     if(!id){notice('先创建一个会话，再打开工作台');return}
-    if(!list.current)ctx.sessions.open(id)
+    if(!list.current && !leases.has(id)){
+      const reference=ctx.sessions.retain(id,{source:'voice-deck'})
+      leases.set(id,()=>reference.release())
+    }
     setView('voice-deck',id)
   }
   const intent=(action:Intent)=>{
@@ -128,7 +136,18 @@ export function apply(ctx:Context) {
     </div>)}</div>}</div>
   }
   const Lane=memo(function Lane({id,index,active}:{id:string;index:number;active:boolean}){
-    const root=useRef<HTMLElement>(null),block=useSource(ctx.conversation.blocks.storeFor(id))
+    const root=useRef<HTMLElement>(null)
+    const block=useSource(ctx.conversation?.blocks?.storeFor(id)??ABSENT_BLOCK)
+    // 0.2.0: SessionSurface consumes a retained session binding source.
+    const [source,setSource]=useState<Source<unknown>|null>(null)
+    useEffect(()=>{
+      let reference:{release():void}|undefined
+      try{
+        reference=ctx.sessions.retain(id,{source:'voice-deck'})
+        setSource(ctx.uiSession.adapter.bindingSource(reference))
+      }catch{setSource(null)}
+      return()=>{try{reference?.release()}catch{}setSource(null)}
+    },[id])
     const list=useSource(ctx.sessions.list),row=list.byId[id]
     useEffect(()=>ctx.deckInput.for(id).attach(),[id])
     useLayoutEffect(()=>{if(active){root.current?.scrollIntoView({block:'nearest',inline:'nearest'});focus(true)}},[active,id])
@@ -145,16 +164,21 @@ export function apply(ctx:Context) {
       resize.observe(lane);resize.observe(composer);measure()
       return()=>resize.disconnect()
     },[id])
-    const openView=(view:string,target:string)=>{if(disposed)return;voice?.leave(id);ctx.sessions.open(id);setView(view,id,target)}
+    const openView=(view:string,target:string)=>{if(disposed)return;voice?.leave(id);if(!leases.has(id)){const reference=ctx.sessions.retain(id,{source:'voice-deck'});leases.set(id,()=>reference.release())}setView(view,id,target)}
     return <section ref={root} className="dsh-deck-lane" data-deck-lane={id} data-active={active} onClickCapture={()=>{if(!active)activate(index)}}>
       <header><span className="dsh-deck-number">{index+1}</span><strong title={row?.displayTitle}>{row?.displayTitle??'会话不可用'}</strong>{row?.running&&<span className="dsh-deck-running">运行中</span>}<button aria-label={`移出泳道 ${index+1}`} onClick={()=>bindLane(index,null)}>×</button></header>
-      <div className="dsh-deck-chat" data-conversation-scroll=""><SessionSurface sessionId={id} part="chat" openView={openView}/></div>
-      <div className="dsh-deck-composer"><SessionSurface sessionId={id} part="composer" blocked={block} openView={openView}/></div>
+      <div className="dsh-deck-chat" data-conversation-scroll=""><SessionSurface source={source} part="chat" openView={openView}/></div>
+      <div className="dsh-deck-composer"><SessionSurface source={source} part="composer" blocked={block} openView={openView}/></div>
     </section>
   })
   function Deck(){
     const s=useSource(store),list=useSource(ctx.sessions.list)
     const grid=useRef<HTMLDivElement>(null)
+    // Cross-bundle deck-mode signal consumed by the patched conversation panel.
+    useEffect(()=>{
+      document.dispatchEvent(new CustomEvent('dsh-deck-lanes',{detail:s.enabled?s.lanes.filter((id):id is string=>!!id):[]}))
+      return()=>{document.dispatchEvent(new CustomEvent('dsh-deck-lanes',{detail:[]}))}
+    },[s.enabled,s.lanes])
     useEffect(()=>{
       const element=grid.current;if(!element)return
       const chatSwipe=attachChatSwipe(element,()=>settle())
