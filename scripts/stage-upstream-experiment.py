@@ -30,6 +30,7 @@ folders = ['dsh-android-fs','dsh-android-debian','dsh-android-codex','dsh-codex-
            'dsh-client-input-gamepad','dsh-client-ui-voice-deck','dsh-client-fold-transition','dsh-android-voice-input','dsh-android-performance']
 for folder in [ROOT/'android-shell/dsh-client-ui-responsive',
                *[ROOT/'android-shell/plugins'/n for n in folders],
+               ROOT/'android-shell/vendor/settings-scope-compat',
                ROOT/'android-shell/vendor/relay-dsh-plugin-codex',ROOT/'android-shell/vendor/relay-dsh-plugin-session-import']:
     package = json.loads((folder/'package.json').read_text()); name=package['name']
     target=profile/'node_modules'/name; target.mkdir(parents=True,exist_ok=True)
@@ -47,6 +48,7 @@ for folder in [ROOT/'android-shell/dsh-client-ui-responsive',
         'dsh-startup-appearance':'startup-appearance', 'dsh-xiaomi-remote':'xiaomi-remote',
         'relay-dsh-plugin-codex':'android-codex-client',
         'relay-dsh-plugin-session-import':'android-codex-import',
+        'settings-scope-compat':'settings-scope-compat',
     }.get(folder.name, folder.name)
     config = ''
     if name=='relay-dsh-plugin-codex': config='      config:\n        androidClientOnly: true\n'

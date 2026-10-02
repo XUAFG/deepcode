@@ -1,0 +1,12 @@
+{
+  "name": "@dsh-android/dsh-settings-scope-compat",
+  "version": "0.1.0",
+  "description": "Provides the legacy settingsScope service (bind/describe) on engine 0.2.0+ where dsh-client-ui-settings no longer registers it; backs namespaces with localStorage",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {".": "./lib/index.js", "./client": "./lib/client.js", "./package.json": "./package.json"},
+  "dsh": {"client": {"inject": ["@deepseek-ai/dsh-client-runtime"], "platform": "web"}},
+  "files": ["lib"],
+  "license": "MIT",
+  "private": true
+}
