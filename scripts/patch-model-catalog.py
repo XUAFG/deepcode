@@ -6,10 +6,12 @@ import tarfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CURRENT_BASELINE = '16ecb48f33996efe72868f1603223214430634c5ac4c3e8fe9060bf240e990ff'
 BASELINE = 'e8c43c85ce89710df30db8104ff98822edced90fca645956a8a8bce6da7ea2a7'
+# v0.14.3 snapshot (engine 0.2.0-rc.2)
+BASELINE_0143 = 'fb0f7b96130f595db20809eeb77a195b05f4a039f931d1e67692f1f74a4dd269'
 
 
 def patch(source):
-    assert hashlib.sha256(source).hexdigest() in (BASELINE, CURRENT_BASELINE), 'Unknown model catalog baseline'
+    assert hashlib.sha256(source).hexdigest() in (BASELINE, CURRENT_BASELINE, BASELINE_0143), 'Unknown model catalog baseline'
     text = source.decode()
     marker = 'async function buildModelCatalog(ctx, defaultSelection = ctx.agentDefaultModel.currentSelection()) {'
     assert text.count(marker) == 1
