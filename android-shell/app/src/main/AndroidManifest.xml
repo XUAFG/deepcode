@@ -35,7 +35,9 @@
     android:allowBackup="false"
     android:fullBackupContent="@xml/backup_rules"
     android:dataExtractionRules="@xml/data_extraction_rules"
-    android:networkSecurityConfig="@xml/network_security_config">
+    android:networkSecurityConfig="@xml/network_security_config"
+    android:requestLegacyExternalStorage="true"
+    android:preserveLegacyExternalStorage="true">
 
     <uses-library android:name="androidx.window.extensions" android:required="false" />
 
@@ -171,5 +173,15 @@
         android:name="android.support.FILE_PROVIDER_PATHS"
         android:resource="@xml/file_paths" />
     </provider>
+
+    <!-- Shizuku API binder bootstrap. Permission protects the exported provider from ordinary apps;
+         Shizuku itself supplies the binder and remains the sole authorization authority. -->
+    <provider
+        android:name="rikka.shizuku.ShizukuProvider"
+        android:authorities="${applicationId}.shizuku"
+        android:enabled="true"
+        android:exported="true"
+        android:multiprocess="false"
+        android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
   </application>
 </manifest>

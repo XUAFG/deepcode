@@ -6,6 +6,7 @@ import android.provider.MediaStore
 import android.util.Log
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import java.io.File
@@ -154,8 +155,29 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
       val callback = pendingPickCallback
       pendingPickCallback = null
       pendingPermissionRequest = false
-      if (callback == null) return@registerForActivityResult
-      val granted = grants.isNotEmpty() && !grants.values.contains(false)
+      // P0-4：这行 `return` 是「点了没反应」的现场——「去授权存储」那条路径**从不开选择器**，
+      // 因而不设 pendingPickCallback，回调进来第一件事就是 return，于是用户点「拒绝」后：
+      // 无 toast、无 hint、chip 不变、什么都没有。现在无论有没有在途选择都给可见回执。
+      val granted = !grants.values.contains(false)
+      if (callback == null) {
+        // 授权入口（非 pick 在途）路径：结果要看得见，且要区分「本次拒绝」与「永久拒绝」。
+        if (granted) {
+          toastIfPossible("存储权限已授予")
+        } else {
+          // 永久拒绝（勾了「不再询问」）后再点系统框也不弹，必须引导去系统设置页——文案不同、下一步不同。
+          val permanent = grants.keys.any { grants[it] != true && !activity.shouldShowRequestPermissionRationale(it) }
+          toastIfPossible(
+            if (permanent) {
+              "存储权限已被拒绝且不再询问——请在系统「应用信息 → 权限 → 文件和媒体」里手动开启"
+            } else {
+              "存储权限未授予——应用暂时无法读写公共目录（Documents/dshdata），可再点一次「去授权存储」"
+            },
+          )
+        }
+        // chip 必须跟着真实结果变（此前拒绝后 chip 仍是「去授权存储」，看起来像没生效过）。
+        activity.guideRenderer.refreshGuideMeta()
+        return@registerForActivityResult
+      }
       if (granted) {
         // 授权成功：占槽 + 起 SAF 树选择器（外部工作区=真实路径）。
         pendingPickCallback = callback
@@ -245,6 +267,31 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
     )
   }
 
+  /**
+   * 存储授权入口（**按 SDK 分流**，0.14.1 用户反馈）。
+   *
+   * 旧实现一律走 [openAllFilesAccessSettings]，而它第一行就是 `if (SDK_INT < 30) return`——
+   * API<30 上「所有文件访问」这套权限模型根本不存在，于是用户按「去授权存储」**毫无反应**：
+   * 不弹任何页面、不给任何反馈。那条路上唯一能拿到公共目录写权限的途径是运行时 READ/WRITE
+   * （本类已有的 `storagePermLauncher` 就是为此注册的）。
+   */
+  fun requestStorageGrant() {
+    when (PublicRepoProvision.grantRoute(android.os.Build.VERSION.SDK_INT)) {
+      PublicRepoProvision.GrantRoute.ALL_FILES_ACCESS_SCREEN -> openAllFilesAccessSettings()
+      PublicRepoProvision.GrantRoute.RUNTIME_STORAGE_PERMISSION -> {
+        // 复用 SAF 路径的运行时权限 launcher：无在途选择时它的回调只清状态、不会再开选择器，
+        // 故不干扰 pick 状态机；有在途选择时不动它（那次选择自己会按授权结果结算）。
+        if (pendingPickCallback != null) return
+        storagePermLauncher.launch(
+          arrayOf(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+          ),
+        )
+      }
+    }
+  }
+
   /** Open the system All Files Access screen for this app. */
   fun openAllFilesAccessSettings() {
     if (android.os.Build.VERSION.SDK_INT < 30) return
@@ -257,9 +304,20 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
       // Some OEMs lack the per-app screen; fall back to the global one.
       try {
         activity.startActivity(Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
-      } catch (_: Exception) {
-        // 无任何可用入口：静默忽略（引擎侧会以取消结算）。
+      } catch (e2: Exception) {
+        // P0-4：两级入口都失败时此前是空 catch「静默忽略」——用户按了「去授权存储」看不到任何反应。
+        // 现在必须说话：告诉他系统没有这个页面，以及可以怎么办（下一步动作）。
+        toastIfPossible("系统没有提供「所有文件访问」设置页——请改用「应用信息 → 权限」逐项授权，或改用文件选择器指定目录")
+        Log.w("dsh-storage", "no All-Files-Access entry on this ROM: " + e2.message)
       }
+    }
+  }
+
+  /** 用户可见回执（Toast）。统一收口：凡是「用户按了某入口」的路径都必须能说话。 */
+  private fun toastIfPossible(msg: String) {
+    try {
+      android.widget.Toast.makeText(activity, msg, android.widget.Toast.LENGTH_LONG).show()
+    } catch (_: Throwable) {
     }
   }
 
@@ -306,6 +364,25 @@ internal class DirectoryPickerController(private val activity: MainActivity) {
  * 上传接口），我们注入的「上传图片」菜单项与其 bridge 图片回传链（onImagePicked）
  * 一并退役；accept 为 image 类型时的相册分支仍在（上游若有图片专用入口就靠它）。
  */
+/**
+ * accept 声明的分类（纯逻辑，可离线单测）。
+ *
+ * 为什么单独抽出来：分流口径直接决定用户看到「相册」还是「文件选择器」，属于**用户可见行为**，
+ * 必须有断言锁住。放在 Activity 里就只能靠装机手测，而这类回归恰恰最容易在改动中无声回退
+ * （0.13.7fx-1 就是这么把相册分支删掉的）。
+ */
+internal object AcceptRouting {
+  /**
+   * 声明是否「纯图片」——只含图片类型时进相册。
+   *
+   * 判据刻意保守：出现任何非图片 token（如全部文件通配、扩展名）都退回 SAF 文档选择器，
+   * 因为混合声明下用户要的是「能挑到那个非图片文件」，送进相册会看不到它。
+   * 注意本行以上属块注释，不要在此写斜杠加星号的字面量（Kotlin 块注释会嵌套）。
+   */
+  fun isImageOnly(declared: List<String>): Boolean =
+    declared.isNotEmpty() && declared.all { it.equals("image/*", ignoreCase = true) || it.startsWith("image/", ignoreCase = true) }
+}
+
 internal class MediaPickController(private val activity: MainActivity) {
 
   // 文件上传（<input type=file> → WebView onShowFileChooser → 系统文件选择器）。
@@ -314,26 +391,61 @@ internal class MediaPickController(private val activity: MainActivity) {
 
   private val filePicker =
     activity.registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-      val callback = filePathCallback
-      filePathCallback = null
-      if (callback != null) {
-        callback.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
-      }
+      deliver(uris)
     }
+
+  /**
+   * 相册选择器（0.14.0 用户实报修正：「上传图片」跳到了文件选择器，而不是相册）。
+   *
+   * 真因：0.13.7fx-1 为了修「空 accept 落到受限『近期的图片』视图」把**相册分支整个删掉**，
+   * 所有类型一律走 SAF 文档选择器。适配层那侧「上传图片」把 accept 正确设成图片通配，
+   * 壳侧却不再看它——于是两个入口打开的是同一个界面，用户看到的正是「俩控件都跳文件 picker」。
+   *
+   * 注意两者不是同一件事：
+   *   - 当年的缺陷是 **accept 为空**时传了空 MIME 数组，DocumentsUI 落到受限视图；
+   *   - 现在是**显式图片类型**，本来就该进相册——把它送回 SAF 是把「放宽兜底」误用成了「统一入口」。
+   *
+   * PickMultipleVisualMedia：API 33+ 走系统照片选择器，更低版本回落 ACTION_GET_CONTENT 的图片类型，
+   * 两者都是用户认知里的「相册」，且仍是多选、仍由上游 addFiles 收口。
+   * 注意 Kotlin 块注释会嵌套，本注释内不得再写斜杠加星号的字面量（会开一个关不掉的嵌套注释）。
+   */
+  private val imagePicker =
+    activity.registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+      deliver(uris)
+    }
+
+  /** 统一把选择结果交回 WebView；空选择必须回 null（回空数组会让 <input> 停在 pending）。 */
+  private fun deliver(uris: List<Uri>) {
+    val callback = filePathCallback
+    filePathCallback = null
+    if (callback != null) {
+      callback.onReceiveValue(if (uris.isEmpty()) null else uris.toTypedArray())
+    }
+  }
 
 
   /** WebView onShowFileChooser 委托（自 MainActivity.configureWebView 迁入）。 */
   fun handleFileChooser(callback: ValueCallback<Array<Uri>>, params: WebChromeClient.FileChooserParams): Boolean {
     // 文件上传走系统文件选择器；directoryPicker 是目录选择（工作区用），两者分离。
-    // 0.13.7fx-1（apk #160）：统一走 SAF 文档选择器并要求「全部文件」。
-    // 旧实现把 accept="image/*" 分流到 ACTION_PICK（相册），accept 为空时传空 MIME 数组——
-    // 实测（MuMu/Android 15 DocumentsUI）：空 MIME 数组会让选择器落到「近期的图片」这类受限
-    // 视图，只有 最近/大型文件/本周 三个筛选项、没有根目录抽屉，用户无法浏览全部存储，
-    // 设备无媒体时更是直接「无任何文件」。现在：type=*/*，MIME 显式给 ["*/*"]（或页面声明的
-    // 类型），保留多选，根目录抽屉因此在场。
+    //
+    // 分流口径（0.14.0 用户实报修正）：**显式图片类型走相册，其余走 SAF 文档选择器**。
+    //
+    // 0.13.7fx-1（apk #160）当年为了修「空 accept → 受限『近期的图片』视图」（实测 MuMu/Android 15
+    // DocumentsUI：空 MIME 数组只有 最近/大型文件/本周 三个筛选项、没有根目录抽屉）而把相册分支
+    // **整个删掉**，改成一律 SAF + 显式 ["*/*"]。那个修法对「accept 为空」是对的，但对
+    // 「accept 显式声明为图片」是**误伤**：用户点「上传图片」期待相册，却被送进文件选择器——
+    // 两个入口打开同一界面（用户原话「俩控件跳转都是跳到了文件 picker 而不是一个文件一个相册」）。
+    //
+    // 现在回到按声明分流，但保留当年的兜底：只有**真的没声明**或声明非图片时才用 */*。
+    val declared = (params.acceptTypes ?: emptyArray()).map { it.trim() }.filter { it.isNotEmpty() }
+    if (AcceptRouting.isImageOnly(declared)) {
+      filePathCallback?.onReceiveValue(null)
+      filePathCallback = callback
+      imagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+      return true
+    }
     filePathCallback?.onReceiveValue(null)
     filePathCallback = callback
-    val declared = (params.acceptTypes ?: emptyArray()).map { it.trim() }.filter { it.isNotEmpty() }
     // apk #182-1：页面可能给**扩展名型** accept（`accept=".pdf"`），原样交给 DocumentsUI 它认不出
     // （列表里看不到 pdf）。逐 token 归一化：`image/*` 这类通配保留、`.ext` 走 MimeTypeMap 查 MIME、
     // 查不到的并入 `*/*`（宁可放宽也不要「一个文件都看不到」）。

@@ -1,162 +1,120 @@
-/**
- * 侧边栏 AI 浏览器的面板入口（U-1）：与上游「工作区文件」同级的右侧栏 tab 类型。
- *
- * 注册面与 ui-sidebar-files 完全同构：类型进 ctx.sidebarRightTabs（其 guide 条目就是
- * 「文件」面板里的同级卡片），body 进 keyed sidebar.right.pane.tab 座位。
- *
- * 数据面：引擎侧 host 半（plugins/dsh-android-browser）的**只读**路由
- * /api/android/browser/status。档位优先来自壳桥 browserCaps；op 未实现时回落 env/实测基线，
- * 并在 factsSource / capsNote 里如实标注（页面不得把它显示成"已实测"）。
- *
- * 跨包命名镜像：kind 与路由在本文件按 plugins/dsh-android-browser/src/contract.ts 的值镜像
- * （该插件是权威契约源；改名必须同批，否则面板打不开）。
- */
-import { useCallback, useEffect, useState } from 'react'
-import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+/** Official BrowserBody/BrowserTitle chrome with an Android-native page provider. */
+import { useLayoutEffect, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import { GuideArtworkBrowser, MenuItemButton } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { TranslateNS } from '@deepseek-ai/dsh-client-locale/client'
+import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
+import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SidebarRightTabDefinition } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import { BrowserBody, type BrowserBodyProps } from './upstream-browser/view/BrowserBody.tsx'
+import type { NativeBrowserControlsInjected } from './native-browser-adapter.ts'
+import css from './BrowserTab.module.css'
 
-/** 与 contract.ts 的 BROWSER_TAB_ID/BROWSER_TAB_KIND 对齐（openTab 用 kind）。 */
+/** Own dispatch id; existing Android browser layout records keep their occurrence ids. */
 export const BROWSER_TAB_ID = 'android-browser'
-export const BROWSER_TAB_KIND = 'android-browser'
-/** 与 contract.ts 的 BROWSER_ROUTES.status 对齐。 */
-export const BROWSER_STATUS_ROUTE = '/api/android/browser/status'
+/** Take the official builtin kind through the registry's extension band. */
+export const BROWSER_TAB_KIND = 'browser'
+/** Guide-less resolver for pre-0.2 Android layouts, without rewriting any layout data. */
+export const LEGACY_BROWSER_TAB_KIND = 'android-browser'
+/** Legacy needs a distinct implementation id because registry ids are globally unique. */
+export const LEGACY_BROWSER_TAB_ID = 'android-browser.legacy'
 
-interface ViewportPreset { id: string; label: string; width: number; height: number; mobile: boolean }
-interface IdentityProfile { id: string; label: string; requiresConfirm: boolean }
-
-/** host 半状态路由的载荷（字段来自 plugins/dsh-android-browser/src/contract.ts）。 */
-export interface BrowserStatus {
-  ok: boolean
-  available: boolean
-  tier: string
-  viewportRoute: string
-  identityRoute: string
-  factsSource: string
-  capsNote?: string
-  webviewMajor?: number
-  densityDpi?: number
-  uaChAvailable?: boolean
-  androidxWebkitAvailable?: boolean
-  densityOverrideSupported?: boolean
-  browserWebViewAvailable?: boolean
-  cdpEnabled?: boolean
-  reasons?: string[]
-  degradedNotes?: string[]
-  viewportPresets?: ViewportPreset[]
-  identityProfiles?: IdentityProfile[]
-}
-
-/**
- * 浏览器 tab 类型定义。
- * @returns 注册进 ctx.sidebarRightTabs 的定义（guide 条目 = 「文件」面板的同级卡片）。
- */
-export function browserTabDefinition(): SidebarRightTabDefinition {
-  return {
-    id: BROWSER_TAB_ID,
-    kind: BROWSER_TAB_KIND,
-    priority: 'extension',
-    title: () => 'AI 浏览器',
-    guide: [
-      {
-        // 工作区文件（ui-sidebar-files）用 order 10；同级卡片排在它后面。
-        order: 20,
-        title: () => 'AI 浏览器',
-        description: () => '在右侧栏打开 AI 专用浏览器工作台（档位 / 视口 / 身份）',
-      },
-    ],
+declare module '@deepseek-ai/dsh-client-ui-sidebar-right/client' {
+  interface SidebarRightTabParamsMap {
+    /** The official Browser URL parameter; native ids stay private to the adapter. */
+    browser: { readonly url?: string }
   }
 }
 
 /**
- * 面板本体：档位 + 视口/身份档位骨架 + 页面区占位。
- * @param props - 组合槽位属性（本组件不读 owner 分享）。
- * @returns 面板元素树。
+ * Contribute the official guide artwork and one Browser entry, not a replacement workspace tree.
+ * @param t - locale-live private Browser dictionary.
+ * @returns extension-band browser type.
  */
-export function BrowserTab(_props: PropsRuntime<'sidebar.right.pane.tab'>) {
-  const [status, setStatus] = useState<BrowserStatus | null>(null)
-  const [note, setNote] = useState<string | null>(null)
+export function browserTabDefinition(t: TranslateNS<'androidSidebarBrowser'>): SidebarRightTabDefinition {
+  return { id: BROWSER_TAB_ID, kind: BROWSER_TAB_KIND, priority: 'extension', multiple: true, keepMounted: true,
+    title: () => t('type.label'),
+    guide: [{ id: 'new', commandId: 'browser.new' as ShortcutCommandId, order: 30,
+      title: () => t('guide.title'), description: () => t('guide.description'), icon: GuideArtworkBrowser }] }
+}
 
-  const refresh = useCallback(async () => {
-    try {
-      const r = await fetch(BROWSER_STATUS_ROUTE, { credentials: 'same-origin', cache: 'no-store' })
-      if (r.status === 401 || r.status === 403) {
-        setNote('未获授权（HTTP ' + r.status + '）——浏览器档位不可读')
-        return
-      }
-      if (!r.ok) {
-        setNote('档位接口不可用（HTTP ' + r.status + '）')
-        return
-      }
-      const json = (await r.json().catch(() => null)) as BrowserStatus | null
-      if (json === null || json.ok !== true) {
-        setNote('档位接口返回异常')
-        return
-      }
-      setStatus(json)
-      setNote(null)
-    } catch {
-      setNote('浏览器面板不可用（host 半未挂载或引擎未就绪）')
-    }
-  }, [])
+/** @param t - locale-live copy. @returns guide-less compatibility resolver. */
+export function legacyBrowserTabDefinition(t: TranslateNS<'androidSidebarBrowser'>): SidebarRightTabDefinition {
+  return { ...browserTabDefinition(t), id: LEGACY_BROWSER_TAB_ID, kind: LEGACY_BROWSER_TAB_KIND, guide: [] }
+}
 
-  useEffect(() => {
-    void refresh()
-    const onVisible = (): void => { if (document.visibilityState === 'visible') void refresh() }
-    document.addEventListener('visibilitychange', onVisible)
-    window.addEventListener('focus', onVisible)
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      window.removeEventListener('focus', onVisible)
-    }
-  }, [refresh])
+/** Bound neutral browser state plus native-specific controls; no component sees Context. */
+export type AndroidBrowserBodyProps = BrowserBodyProps & InjectFace<NativeBrowserControlsInjected>
 
-  const degraded = status?.degradedNotes ?? []
+function parseResolution(value: string): { width: number; height: number } | undefined {
+  const match = /^\s*(\d{2,4})\s*[x×*]\s*(\d{2,4})\s*$/i.exec(value)
+  if (match === null) return undefined
+  const width = Number(match[1])
+  const height = Number(match[2])
+  return width >= 240 && width <= 3840 && height >= 240 && height <= 3840 ? { width, height } : undefined
+}
 
-  return (
-    <div
-      data-plugin="android-browser"
-      style={{ height: '100%', minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '8px', padding: '8px', boxSizing: 'border-box' }}
-    >
-      {note !== null && <p data-testid="browser-note" style={{ margin: 0 }}>{note}</p>}
-      {status !== null && (
-        <>
-          <p data-testid="browser-tier" style={{ margin: 0 }}>
-            {'档位 ' + status.tier + ' · 视口 ' + status.viewportRoute + ' · 身份 ' + status.identityRoute}
-          </p>
-          <p data-testid="browser-source" style={{ margin: 0, opacity: 0.75 }}>
-            {'事实来源 ' + status.factsSource + (status.capsNote === undefined ? '' : '（' + status.capsNote + '）')}
-          </p>
-          <label style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <span>视口档位</span>
-            <select data-testid="browser-viewport" disabled defaultValue="phone-portrait">
-              {(status.viewportPresets ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label + ' ' + String(p.width) + 'x' + String(p.height)}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <span>身份档位</span>
-            <select data-testid="browser-identity" disabled defaultValue="android-real">
-              {(status.identityProfiles ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.label + (p.requiresConfirm ? '（需二次确认）' : '')}</option>
-              ))}
-            </select>
-          </label>
-          <div
-            data-testid="browser-stage"
-            style={{ flex: 1, minHeight: 0, border: '1px dashed currentColor', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '12px', textAlign: 'center', opacity: 0.85 }}
-          >
-            {status.browserWebViewAvailable
-              ? '浏览器画面将在此显示（壳侧 host 已就绪）'
-              : '壳侧 BrowserHost 未接入：等待 MainActivity 窗口释放后启用有头浏览面'}
-          </div>
-          {degraded.length > 0 && (
-            <ul data-testid="browser-degraded" style={{ margin: 0, paddingLeft: '18px', opacity: 0.8 }}>
-              {degraded.map((n) => <li key={n}>{n}</li>)}
-            </ul>
-          )}
-        </>
-      )}
-    </div>
-  )
+/** Reuse the official address/start/restore UI; native controls occupy their own non-stage row. */
+export function BrowserTab(props: AndroidBrowserBodyProps): ReactNode {
+  const { useTabInfo, useNativeBrowserState, setBrowserVisible, setBrowserIdentity, setBrowserViewport, refreshBrowserStatus, t } = props
+  const { tab } = useTabInfo()
+  const state = useNativeBrowserState(tab.id)
+  const current = state !== undefined && state.viewportWidth > 0 && state.viewportHeight > 0
+    ? state.viewportWidth + 'x' + state.viewportHeight : '390x844'
+  const [edit, setEdit] = useState<{ readonly current: string; readonly value: string }>()
+  const [invalid, setInvalid] = useState(false)
+  const value = edit?.current === current ? edit.value : current
+  const ready = state?.available === true && state.nativeTabId !== undefined
+  const desktop = state?.identityId === 'linux-desktop'
+  const mobile = state?.identityId === 'android-real'
+  useLayoutEffect(() => {
+    setBrowserVisible(tab.id, tab.visible)
+    return () => { setBrowserVisible(tab.id, false) }
+  }, [setBrowserVisible, tab.id, tab.visible])
+  const submit = (event: FormEvent): void => {
+    event.preventDefault()
+    const resolution = parseResolution(value)
+    setInvalid(resolution === undefined)
+    if (resolution !== undefined) setBrowserViewport(tab.id, resolution.width, resolution.height)
+  }
+  return <div className={css.root}>
+    {state?.available === false && <div className={css.status} role="status">
+      {t('native.unavailable', { reason: state.reason })}
+      <button type="button" onClick={() => { refreshBrowserStatus(tab.id) }}>{t('native.retry')}</button>
+    </div>}
+    {state?.available === true && state.reason !== '' && <div className={css.status} role="status">
+      {t('native.operation.failed', { reason: state.reason })}
+    </div>}
+    {state?.available === true && state.profileAvailable === false && <div className={css.status} role="status">
+      {t('native.profile.unavailable', { reason: state.profileReason })}
+    </div>}
+    <div className={css.official}><BrowserBody {...props} /></div>
+    <form className={css.controls} onSubmit={submit}>
+      <button type="button" className={css.mode} disabled={!ready} aria-pressed={desktop}
+        onClick={() => { setBrowserIdentity(tab.id, true) }}>{t('native.desktop')}</button>
+      <button type="button" className={css.mode} disabled={!ready} aria-pressed={mobile}
+        onClick={() => { setBrowserIdentity(tab.id, false) }}>{t('native.mobile')}</button>
+      <input className={css.resolution} value={value} aria-label={t('native.viewport')} aria-invalid={invalid}
+        disabled={!ready} spellCheck={false} onChange={event => { setEdit({ current, value: event.currentTarget.value }); setInvalid(false) }} />
+      <button type="submit" className={css.apply} disabled={!ready}>{t('native.viewport.apply')}</button>
+    </form>
+    {invalid && <div className={css.status} role="alert">{t('native.viewport.invalid')}</div>}
+  </div>
+}
+
+/** Framework-owned menu occurrence; content actions join the real Sidebar tab menu. */
+export type BrowserTabMenuProps = PropsRuntime<'sidebar.right.tab.menu.item'>
+  & PropsLocale<'androidSidebarBrowser'> & InjectFace<NativeBrowserControlsInjected>
+
+/** Add native profile/status/close actions without fabricating a public toolbar slot. */
+export function BrowserTabMenu({ tab, dismiss, useNativeBrowserState, setBrowserIdentity, refreshBrowserStatus, closeBrowserTab, t }: BrowserTabMenuProps): ReactNode {
+  const state = useNativeBrowserState(tab.id)
+  if (tab.kind !== BROWSER_TAB_KIND && tab.kind !== LEGACY_BROWSER_TAB_KIND) return null
+  const ready = state?.available === true && state.nativeTabId !== undefined
+  return <>
+    <MenuItemButton separatorBefore disabled={!ready} onSelect={() => { dismiss(); setBrowserIdentity(tab.id, true) }}>{t('native.desktop')}</MenuItemButton>
+    <MenuItemButton disabled={!ready} onSelect={() => { dismiss(); setBrowserIdentity(tab.id, false) }}>{t('native.mobile')}</MenuItemButton>
+    <MenuItemButton onSelect={() => { dismiss(); refreshBrowserStatus(tab.id) }}>{t('native.retry')}</MenuItemButton>
+    <MenuItemButton danger onSelect={() => { dismiss(); closeBrowserTab(tab.id) }}>{t('native.close')}</MenuItemButton>
+  </>
 }

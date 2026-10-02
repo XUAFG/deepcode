@@ -42,6 +42,7 @@ export const BROWSER_OPS = {
   caps: 'browserCaps',
   show: 'browserShow',
   hide: 'browserHide',
+  close: 'browserClose',
   open: 'browserOpen',
   js: 'browserJs',
   input: 'browserInput',
@@ -49,6 +50,12 @@ export const BROWSER_OPS = {
   state: 'browserState',
   setUa: 'browserSetUa',
   viewport: 'browserViewport',
+  // 0.14.0 多页签（用户语义：AI 用工具直接管多网页，UI 只是给人看的视图）：
+  // 此前只注册了 browserOpen，但BrowserHost 是单 WebView —— 工具承诺了做不到的事
+  // （用户实测开三个站点只有一个生效）。这三条把「多页」补齐为真。
+  tabs: 'browserTabs',
+  followTab: 'browserFollowTab',
+  closeTab: 'browserCloseTab',
 } as const
 
 /** 面板数据面路由（引擎侧 webserver；**本轮不注册**，避免 exact 路由绕过 /api 前缀鉴权的老问题）。 */
@@ -56,7 +63,7 @@ export const BROWSER_ROUTES = {
   status: '/api/android/browser/status',
 } as const
 
-/** 视口档位（方案 §3.4 建议档 + R5 默认竖屏）。 */
+/** 视口档位（方案 §4.3 全量表 + “跟随系统屏幕”动态档）。 */
 export interface ViewportPreset {
   id: string
   width: number
@@ -66,10 +73,14 @@ export interface ViewportPreset {
 }
 
 export const VIEWPORT_PRESETS: readonly ViewportPreset[] = [
-  { id: 'phone-portrait', width: 390, height: 844, label: '手机竖屏（默认）', mobile: true },
-  { id: 'tablet', width: 768, height: 1024, label: '平板', mobile: true },
-  { id: 'desktop-720', width: 1280, height: 720, label: '桌面 1280x720', mobile: false },
-  { id: 'desktop-1080', width: 1920, height: 1080, label: '桌面 1920x1080', mobile: false },
+  { id: 'device', width: 0, height: 0, label: '跟随工位（默认）', mobile: true },
+  { id: 'phone-portrait', width: 390, height: 844, label: '手机竖屏 390×844', mobile: true },
+  { id: 'portrait-720', width: 720, height: 1280, label: '手机竖屏 720×1280', mobile: true },
+  { id: 'portrait-1080', width: 1080, height: 1920, label: '手机竖屏 1080×1920', mobile: true },
+  { id: 'tablet', width: 768, height: 1024, label: '平板 768×1024', mobile: true },
+  { id: 'tablet-landscape', width: 1024, height: 768, label: '平板横屏 1024×768', mobile: false },
+  { id: 'desktop-720', width: 1280, height: 720, label: '桌面 1280×720', mobile: false },
+  { id: 'desktop-1080', width: 1920, height: 1080, label: '桌面 1920×1080', mobile: false },
 ] as const
 
 /** 身份档位（默认真实手机；伪装档需额外确认与风险文案，方案 §3.5）。 */
@@ -147,15 +158,22 @@ export const BROWSER_TOOL_CONTRACTS: readonly ToolContract[] = [
 /** 壳桥 op 逐条契约（参数 / 返回 / 权限档），供六处登记链与面板共用。 */
 export const BROWSER_OP_CONTRACTS: readonly ToolContract[] = [
   { name: BROWSER_OPS.caps, params: '{}', returns: '{ok,webviewMajor,uaChAvailable,androidxWebkitCompiled,androidxWebkitAvailable,densityOverrideSupported,screenWidth,screenHeight,densityDpi,rendererProcesses}', permission: 'read' },
-  { name: BROWSER_OPS.show, params: '{x:number,y:number,w:number,h:number}', returns: '{ok,visible:boolean}', permission: 'read' },
-  { name: BROWSER_OPS.hide, params: '{}', returns: '{ok,visible:boolean}', permission: 'read' },
-  { name: BROWSER_OPS.open, params: '{url:string}', returns: '{ok,url}', permission: 'approval' },
-  { name: BROWSER_OPS.js, params: '{expr:string}', returns: '{ok,value:string}', permission: 'full-access' },
-  { name: BROWSER_OPS.input, params: '{kind:"tap"|"key"|"text", x?:number, y?:number, text?:string, key?:string}', returns: '{ok}', permission: 'approval' },
-  { name: BROWSER_OPS.shot, params: '{inline?:boolean}', returns: '{ok,path?,bytes}', permission: 'full-access' },
-  { name: BROWSER_OPS.state, params: '{}', returns: '{ok,url,title,loadState,canGoBack,canGoForward,visible}', permission: 'read' },
-  { name: BROWSER_OPS.setUa, params: '{profile:string, ua:string, platform:string, mobile:boolean, metadata?:object}', returns: '{ok,applied,uaChApplied:boolean}', permission: 'confirm' },
-  { name: BROWSER_OPS.viewport, params: '{route:"S1"|"S2"|"S2b"|"S3", width:number, height:number, scale?:number}', returns: '{ok,route,width,height}', permission: 'approval' },
+  { name: BROWSER_OPS.show, params: '{url?:string}', returns: '{ok,visible,created,url,pageGeneration}', permission: 'read' },
+  { name: BROWSER_OPS.hide, params: '{}', returns: '{ok,visible}', permission: 'read' },
+  { name: BROWSER_OPS.close, params: '{}', returns: '{ok,created,visible}', permission: 'read' },
+  { name: BROWSER_OPS.open, params: '{url:string}', returns: '{ok,url,title,pageGeneration,reason}', permission: 'approval' },
+  { name: BROWSER_OPS.js, params: '{expr?:string, snapshot?:boolean}', returns: '{ok,value,pageGeneration,url} | 快照 {ok,tabId,surface,pageGeneration,url,title,viewport,nodes[],truncated}', permission: 'full-access' },
+  { name: BROWSER_OPS.input, params: '{kind:"tap"|"key"|"text", ref?, pageGeneration?, x?, y?, text?, key?}', returns: '{ok,url,pageGeneration,changed?,value?}', permission: 'approval' },
+  { name: BROWSER_OPS.shot, params: '{inline?:boolean}', returns: '{ok,path,bytes,width,height,health,note?}', permission: 'full-access' },
+  { name: BROWSER_OPS.state, params: '{}', returns: '{ok,url,title,pageGeneration,canGoBack,canGoForward,visible,tabId,tabs[]}', permission: 'read' },
+  { name: BROWSER_OPS.setUa, params: '{profile:string, ua:string, platform:string, mobile:boolean}', returns: '{ok,profile,applied,uaChApplied:boolean,degraded?,reloaded}', permission: 'confirm' },
+  { name: BROWSER_OPS.viewport, params: '{route:"S1"|"S2"|"S2b"|"S3", preset?:string, width:number, height:number, scale?:number}', returns: '{ok,route,width,height}', permission: 'approval' },
+  // 0.14.0 多页签：三条 op 与 BROWSER_OPS 同批登记。契约完备性由插件单测守
+  // （test/tier.test.mjs 的「契约完备」用例断言 BROWSER_OPS 每个键都有条目——
+  //  我加 op 时漏补这里，正是被该用例抓到的）。
+  { name: BROWSER_OPS.tabs, params: '{}', returns: '{ok,tabs[],activeTabId,tabCount}', permission: 'read' },
+  { name: BROWSER_OPS.followTab, params: '{tabId:string}', returns: '{ok,activeTabId,url,tabs[]}', permission: 'read' },
+  { name: BROWSER_OPS.closeTab, params: '{tabId?:string}', returns: '{ok,closedTabId,activeTabId,tabs[]}', permission: 'read' },
 ] as const
 
 /** 面板状态载荷（面板/设置页读；**只读、无副作用**）。字段全部为必填，避免 undefined 成员。 */

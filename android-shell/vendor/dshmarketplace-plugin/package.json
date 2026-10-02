@@ -1,6 +1,6 @@
 {
   "name": "dshmarketplace-plugin",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "Browse and install DeepSeek Harness plugins from inside DSH, in English or Chinese.",
   "keywords": [
     "dsh",
@@ -57,8 +57,8 @@
     }
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-native-command": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6"
+    "@deepseek-ai/dsh-native-command": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

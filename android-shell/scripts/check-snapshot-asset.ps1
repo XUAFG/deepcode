@@ -13,7 +13,8 @@ if (-not (Test-Path $ApkPath)) { throw "APK 不存在: $ApkPath" }
 if (-not (Test-Path $SnapshotPath)) { throw "快照文件不存在: $SnapshotPath" }
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($ApkPath)
-$tmp = Join-Path $env:TEMP ("snap-embed-" + [guid]::NewGuid().ToString('N') + ".tar.xz")
+# GitHub Actions 的 Linux PowerShell 不保证 `$env:TEMP` 存在；使用运行时平台临时目录，避免跨平台发布链传入 null Path。
+$tmp = Join-Path ([IO.Path]::GetTempPath()) ("snap-embed-" + [guid]::NewGuid().ToString('N') + ".tar.xz")
 try {
     $entry = $zip.GetEntry('assets/snapshot.tar.xz')
     if (-not $entry) { throw "APK 内缺少 assets/snapshot.tar.xz: $ApkPath" }

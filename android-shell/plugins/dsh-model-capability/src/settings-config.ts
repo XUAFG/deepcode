@@ -41,15 +41,21 @@ function stringMap(value: unknown): Record<string, string> | undefined {
  * Returns the provider configuration, or undefined when the route (or its
  * baseURL) is absent — the caller reports that instead of guessing a target.
  */
-export function providerFromSettings(settings: SettingsLike | undefined, route: string): ProviderConfig | undefined {
+export function providerFromSettings(
+  settings: SettingsLike | undefined,
+  route: string,
+  sectionOverride?: unknown,
+): ProviderConfig | undefined {
   if (!settings) return undefined
-  let section: unknown
-  try {
-    // 注意：settings.describe(options) 的 options 当前被实现忽略（返回全部命名空间），
-    // 所以必须按 ns 查找——不能用 [0]（实测踩坑：拿到的可能是 llm-deepseek）。
-    section = settings.describe({ namespaces: ['llm-pi-ai'] }).find((d) => d.ns === 'llm-pi-ai')?.value
-  } catch {
-    return undefined
+  let section: unknown = sectionOverride
+  if (sectionOverride === undefined) {
+    try {
+      // 注意：settings.describe(options) 的 options 当前被实现忽略（返回全部命名空间），
+      // 所以必须按 ns 查找——不能用 [0]（实测踩坑：拿到的可能是 llm-deepseek）。
+      section = settings.describe({ namespaces: ['llm-pi-ai'] }).find((d) => d.ns === 'llm-pi-ai')?.value
+    } catch {
+      return undefined
+    }
   }
   const entry = record(record(section).providers ? record(record(section).providers)[route] : undefined)
   const baseURL = typeof entry.baseURL === 'string' && entry.baseURL !== '' ? entry.baseURL : undefined

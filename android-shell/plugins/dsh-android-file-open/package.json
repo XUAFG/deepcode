@@ -1,6 +1,6 @@
 {
   "name": "@dsh-android/dsh-android-file-open",
-  "description": "File-to-session (PRD F5): receive the incoming file path, force a NEW session with explicit context, route the UI (server endpoint + session manifest + status tool)",
+  "description": "External file to blank session: receive a safe incoming path, create an unsent generic file-attachment draft, and route the UI through opaque queue metadata",
   "version": "0.1.0",
   "type": "module",
   "main": "lib/index.js",
@@ -19,14 +19,12 @@
     "@dsh-android/dsh-android-bridge": "file:../dsh-android-bridge"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": "^0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm": "^0.1.1-rc.2",
-    "@deepseek-ai/cordis": "4.0.1"
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.2",
+    "@deepseek-ai/cordis": "4.0.4"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-tools": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-llm": "0.1.1-rc.2",
-    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2",
+    "@deepseek-ai/cordis": "4.0.4",
     "@types/node": "^24.0.0",
     "typescript": "^5.5.0"
   },

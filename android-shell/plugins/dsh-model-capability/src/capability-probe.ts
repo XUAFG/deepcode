@@ -11,7 +11,11 @@
  *      no spend, no side effects);
  *   2. vendor descriptor parsing, keyed on the *response shape*, for endpoints
  *      that expose an explicit capability schema;
- *   3. active probes — only when the caller passes explicit approval, because
+ *   3. the models.dev encyclopedia (cross-vendor long tail; see models-dev.ts);
+ *   4. exact model-id lookup in the pi-ai catalogs the engine ships;
+ *   5. user-declared fallbacks — present only when the user configured them,
+ *      never a factory default, so an unstated capability stays absent;
+ *   6. active probes — only when the caller passes explicit approval, because
  *      they send a real (minimal) completion request.
  *
  * Invariants:
@@ -31,7 +35,13 @@ export type ThinkingLevel = typeof THINKING_LEVELS[number]
 /** Level -> wire spelling sent to the endpoint (null = supported, send nothing). */
 export type ReasoningEfforts = Partial<Record<ThinkingLevel, string | null>>
 
-export type CapabilitySource = 'endpoint-descriptor' | 'vendor-descriptor' | 'engine-catalog' | 'active-probe'
+export type CapabilitySource =
+  | 'endpoint-descriptor'
+  | 'vendor-descriptor'
+  | 'models-dev'
+  | 'engine-catalog'
+  | 'user-fallback'
+  | 'active-probe'
 
 export type CapabilityKey = 'input' | 'contextWindow' | 'maxTokens' | 'reasoningEfforts'
 

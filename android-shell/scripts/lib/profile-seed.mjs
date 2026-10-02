@@ -1,66 +1,68 @@
-// profile-seed.mjs — 出厂 profile 清单 seed（性能 A1 落点；纯函数，可单测）。
+// profile-seed.mjs — 出厂 profile 清单体检（纯函数，可单测；镜像面，改这里要同步 apk 侧副本）。
 //
-// 背景（docs/ANDROID-RUNTIME-PERF-2026-09-12.md §A1，实测 −33% 冷启动 24.9s -> 16.6s）：
-// 出厂 home/.dsh/profiles/web/package.json 的 dsh.profile.patchReload 决定引擎是否在启动期挂
-// live reload（cordis-plugin-timer + hmr，反复现场重算客户端 combo）。Android 上 live reload
-// 本就不可用（坑 19：改 cordis.patch.yml 必须冷启动才生效），因此出厂 seed 直接写 startup。
+// 为什么是「体检」而不是「seed 旋钮」：0.13.8 性能 A1 曾往 dsh.profile.patchReload 写 startup
+// 以关掉 live patch reload（实测冷启动 24.9s -> 16.6s），配套引擎树补丁 N1 归一化存量设备。
+// 0.1.7-rc.1 起上游把这套机制整条拆了：全仓 `patchReload` 零命中，reload 链改成
+// `dsh-client-hmr` 一行常驻、无 dev watcher 时**空转**（packages/bundle/web-app/cordis.patch.yml
+// 自述）。⇒ 键已死，写它只会让出厂清单里躺一个没人读的字段，而门禁会去证明「我们写了一个死键」。
 //
-// 两条路径的分工：
-//   - 全新安装（本模块，快照构建期 seed）：显式把键写进出厂清单；
-//   - 存量升级（引擎树补丁 perf-patch-reload-N1）：旧引擎已把 live 显式写进设备清单，
-//     上游「只在键缺失时写回模板默认」的归一化永远够不到它，由 N1 补丁归一化。
+// 保留一条真实不变量：出厂清单只带上游真会读的东西（dsh.profile.bundles 非空、无死键）。
+// 死键来源不是假设——0.14.1 及更早的构建把 patchReload 写进了快照，基座 home 会被后续快照继承。
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 
-/** 出厂需要 seed 的 profile（其余 profile 元组不属安装方，引擎侧模板各自决定）。 */
-export const SEED_PROFILES = ['web', 'headless']
-/** 出厂默认：Android 无 live reload 收益（坑 19）。dev 档可用 DSH_PROFILE_PATCH_RELOAD=live 覆写。 */
-export const SEED_DEFAULT_RELOAD = 'startup'
+/** 需要体检的出厂 profile（其余 profile 元组不属安装方）。 */
+export const SHIPPED_PROFILES = ['web', 'headless']
+/** 上游不再读取、留在清单里只会造成误读的键。 */
+export const DEAD_PROFILE_KEYS = ['patchReload']
 
 /**
- * Seed dsh.profile.patchReload into the staged profile manifests.
+ * Strip dead keys from the staged profile manifests and assert the shipped shape.
  * @param stageRoot - snapshot stage root, holding home/.dsh/profiles/<name>/package.json.
- * @param options - reload (default SEED_DEFAULT_RELOAD) and profiles (default SEED_PROFILES).
- * @returns per-profile entries: profile, path, missing, changed, value, previous.
+ * @param options - profiles (default SHIPPED_PROFILES) and dead keys (default DEAD_PROFILE_KEYS).
+ * @returns per-profile entries: profile, path, missing, changed, stripped, bundles.
  */
-export function seedProfilePatchReload(stageRoot, options = {}) {
-  const reload = options.reload === undefined ? SEED_DEFAULT_RELOAD : options.reload
-  const profiles = options.profiles === undefined ? SEED_PROFILES : options.profiles
+export function checkShippedProfileManifests(stageRoot, options = {}) {
+  const profiles = options.profiles === undefined ? SHIPPED_PROFILES : options.profiles
+  const deadKeys = options.deadKeys === undefined ? DEAD_PROFILE_KEYS : options.deadKeys
   const report = []
   for (const profile of profiles) {
     const manifestPath = join(stageRoot, 'home', '.dsh', 'profiles', profile, 'package.json')
     if (!existsSync(manifestPath)) {
-      report.push({ profile, path: manifestPath, missing: true, changed: false, value: null, previous: null })
+      report.push({ profile, path: manifestPath, missing: true, changed: false, stripped: [], bundles: 0 })
       continue
     }
     const text = readFileSync(manifestPath, 'utf8')
     const manifest = JSON.parse(text)
-    const previous = manifest.dsh && manifest.dsh.profile ? (manifest.dsh.profile.patchReload === undefined ? null : manifest.dsh.profile.patchReload) : null
-    manifest.dsh = manifest.dsh || {}
-    manifest.dsh.profile = manifest.dsh.profile || {}
-    manifest.dsh.profile.patchReload = reload
+    const profileSection = manifest.dsh?.profile
+    const stripped = profileSection === undefined ? [] : deadKeys.filter((key) => profileSection[key] !== undefined)
+    for (const key of stripped) delete profileSection[key]
+    const bundles = profileSection?.bundles ?? []
     const next = JSON.stringify(manifest, null, 2) + '\n'
-    const changed = previous !== reload || text !== next
+    const changed = next !== text
     if (changed) writeFileSync(manifestPath, next)
-    report.push({ profile, path: manifestPath, missing: false, changed, value: reload, previous })
+    report.push({ profile, path: manifestPath, missing: false, changed, stripped, bundles: bundles.length })
   }
   return report
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const args = process.argv.slice(2)
-  const stageRoot = args[0]
-  const reloadIdx = args.indexOf('--reload')
-  const reload = reloadIdx >= 0 ? args[reloadIdx + 1] : (process.env.DSH_PROFILE_PATCH_RELOAD || SEED_DEFAULT_RELOAD)
+  const stageRoot = process.argv.slice(2)[0]
   if (!stageRoot) {
-    console.error('用法: node scripts/lib/profile-seed.mjs <stageRoot> [--reload startup|live]')
+    console.error('用法: node scripts/lib/profile-seed.mjs <stageRoot>')
     process.exit(2)
   }
-  const report = seedProfilePatchReload(stageRoot, { reload })
+  const report = checkShippedProfileManifests(stageRoot)
+  let bad = 0
   for (const r of report) {
-    console.log('profile seed: ' + r.profile + ' patchReload=' + (r.value === null ? '<profile 缺席>' : r.value)
-      + (r.changed ? ' (updated)' : ' (unchanged)') + ' previous=' + (r.previous === null ? 'none' : r.previous))
+    if (r.missing || r.bundles === 0) bad++
+    console.log(`profile 体检: ${r.profile} missing=${r.missing} bundles=${String(r.bundles)}`
+      + ` 死键剥除=[${r.stripped.join(', ')}]${r.changed ? ' (已改写)' : ''}`)
   }
-  console.log('PROFILE-SEED OK（' + report.filter((r) => !r.missing).length + '/' + report.length + ' 个 profile，reload=' + reload + '）')
+  if (bad > 0) {
+    console.error(`PROFILE-CHECK FAILED（${bad}/${report.length} 个出厂 profile 不合格）`)
+    process.exit(1)
+  }
+  console.log(`PROFILE-CHECK OK（${report.length} 个出厂 profile：无死键、bundles 非空）`)
 }

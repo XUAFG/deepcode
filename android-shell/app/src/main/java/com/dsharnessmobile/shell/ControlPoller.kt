@@ -1,5 +1,6 @@
 package com.dsharnessmobile.shell
 
+import android.content.Context
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -10,7 +11,7 @@ import java.net.URL
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 无障碍控制队列客户端（0.13.5 W4，PRD-0.13.2 §3.3 B2）。
+ * 控制队列客户端（0.13.5 W4，PRD-0.13.2 §3.3 B2；0.14.0 起由 [ControlCarrier] 持有）。
  *
  * 方向：引擎侧是服务端（`/api/android/ui/pending` + `/api/android/ui/result`），
  * 本类在壳侧**长轮询**取活并回填结果。长轮询（默认 5s）比 500ms 短轮询更轻：
@@ -26,13 +27,21 @@ import java.util.concurrent.atomic.AtomicBoolean
  * - 回填 413（too_large）不沉默也不退避：按 L1 阶梯自动改 `view="target"` 重跑一次，
  *   仍超限则如实回填失败（L4「放弃但必须回填」，绝不静默）。
  *
+ * 0.14.0（承载拆离）：op 执行与心跳都改走注入面（[ControlCarrier]），不再绑定无障碍服务实例——
+ * 无障碍关闭时 browser 与 vd 两组 op 仍可用；`caps.a11y` 如实上报无障碍处理器是否在场。
+ *
  * 0.13.8 #181：
  * - 已执行 reqId 去重（有界 LRU）：重连/重投场景下同一请求绝不执行两次；
  * - 非 2xx 不再静默丢弃——读 errorStream 与 X-DSH-Control-* 响应头并记日志
  *   （409 = 双 settle 竞态的观测点；413 = 回填超限，真因首次可见）；
  * - 通用 catch 补日志（原先完全吞掉）。
  */
-class ControlPoller(private val service: DeviceControlService) {
+class ControlPoller(
+  private val context: Context,
+  private val handler: (String, JSONObject) -> JSONObject,
+  private val capsExtra: () -> JSONObject = { JSONObject() },
+  private val heartbeat: () -> Unit = { DeviceControlService.heartbeat(context) },
+) {
 
   companion object {
     private const val TAG = "dsh-a11y"
@@ -65,7 +74,7 @@ class ControlPoller(private val service: DeviceControlService) {
     heartbeatThread = Thread({
       while (running.get()) {
         try {
-          DeviceControlService.heartbeat(service)
+          heartbeat()
         } catch (_: Throwable) {
         }
         sleep(2_000)
@@ -86,7 +95,7 @@ class ControlPoller(private val service: DeviceControlService) {
 
   private fun loop() {
     var backoff = IDLE_BACKOFF_MS
-    val token = DeviceControlService.token(service)
+    val token = DeviceControlService.token(context)
     while (running.get()) {
       try {
         val poll = post(
@@ -147,7 +156,7 @@ class ControlPoller(private val service: DeviceControlService) {
 
   /** 执行一次 op，归一成 {ok, data|error} 结果体。 */
   private fun runOp(op: String, args: JSONObject): JSONObject = try {
-    val result = service.handle(op, args)
+    val result = handler(op, args)
     val err = result.optString("__error", "")
     if (err.isNotEmpty()) JSONObject().put("ok", false).put("error", err)
     else JSONObject().put("ok", true).put("data", result)
@@ -156,20 +165,23 @@ class ControlPoller(private val service: DeviceControlService) {
   }
 
   /** 回填信封（§S2.2）：`pv` + `caps` 让引擎知道对面是懂协议的壳（版本协商 §S4）。 */
-  private fun envelope(token: String, reqId: String, outcome: JSONObject): JSONObject = JSONObject()
-    .put("token", token)
-    .put("reqId", reqId)
-    .put("ok", outcome.optBoolean("ok", false))
-    .put("pv", ControlProtocolV2.PV)
-    .put(
-      "caps",
-      JSONObject()
-        .put("ops", org.json.JSONArray(ControlProtocolV2.SUPPORTED_OPS as Collection<*>))
-        .put("view", org.json.JSONArray(listOf("all", "target")))
-        .put("gz", false),
-    )
-    .put("data", outcome.opt("data"))
-    .put("error", outcome.optString("error", ""))
+  private fun envelope(token: String, reqId: String, outcome: JSONObject): JSONObject {
+    val caps = JSONObject()
+      .put("ops", org.json.JSONArray(ControlProtocolV2.SUPPORTED_OPS as Collection<*>))
+      .put("view", org.json.JSONArray(listOf("all", "target")))
+      .put("gz", false)
+    // 0.14.0 承载拆离：caps 追加承载者事实（如 a11y 处理器是否在场）——扩展键不覆盖协议键。
+    val extra = capsExtra()
+    for (key in extra.keys()) caps.put(key, extra.get(key))
+    return JSONObject()
+      .put("token", token)
+      .put("reqId", reqId)
+      .put("ok", outcome.optBoolean("ok", false))
+      .put("pv", ControlProtocolV2.PV)
+      .put("caps", caps)
+      .put("data", outcome.opt("data"))
+      .put("error", outcome.optString("error", ""))
+  }
 
   /**
    * POST JSON 并解析响应；非 2xx 读 errorStream + X-DSH-Control-* 头后返回 null（调用方退避）。

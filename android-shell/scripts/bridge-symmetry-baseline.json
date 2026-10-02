@@ -1,5 +1,5 @@
 {
-  "$comment": "桥面对称性基线（0.13.8-b ST-26）。基线 = 本轮实测的存量不对称；门禁只许它变少：新增不对称即 FAIL，条目消失（已修）也必须删除条目否则 stale FAIL。每条必须有 reason；pairs 显式声明「名字对不上但语义成对」的 setter/getter（例：setAvailable ↔ getBackAvailable）。",
+  "$comment": "桥面对称性基线（0.13.8-b ST-26）。基线 = 本轮实测的存量不对称；门禁只许它变少：新增不对称即 FAIL，条目消失（已修）也必须删除条目否则 stale FAIL。每条必须有 reason；pairs 显式声明「名字对不上但语义成对」的 setter/getter（例：setAvailable ↔ getBackAvailable）。0.14.0：ADB 授权面（adbShell/getAdbState/setAdbAllow/setAdbPair/revokeAdbPair/discoverAdbPorts）随内置 adb 退役删除，a11y* 三条已补进页面类型面——对应基线条目已移除。",
   "surfaces": [
     {
       "id": "androidBridge",
@@ -13,6 +13,14 @@
       "kotlinStart": "class BackGateBridge(",
       "ts": "dsh-client-ui-responsive/src/client/mobile/back-stack.ts",
       "tsInlineBlock": "dshBackBridge?:"
+    },
+    {
+      "$comment": "G-6（2026-09-25）：ConsoleActivity.ConsoleBridge 的 6 个方法此前不在任何门禁扫描面（本门禁只扫 androidBridge / backGateBridge）。它的消费者是 assets/console.html 里的普通 JS，没有 TS 类型声明，故用 jsCallMarker 从**真实调用点**取面。",
+      "id": "consoleBridge",
+      "kotlin": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/ConsoleActivity.kt",
+      "kotlinStart": "inner class ConsoleBridge",
+      "ts": "dsh-mobile-apk/app/src/main/assets/console.html",
+      "jsCallMarker": "window.consoleBridge"
     }
   ],
   "pairs": [
@@ -29,21 +37,13 @@
     { "surface": "androidBridge", "method": "copyText", "reason": "页面侧类型面未声明；composer 回退路径直读" },
     { "surface": "androidBridge", "method": "requestAllFilesAccess", "reason": "页面侧类型面未声明；设置页权限引导由壳侧 Intent 承担" },
     { "surface": "androidBridge", "method": "getPickToken", "reason": "页面侧类型面未声明；token 由引擎侧 pick 端点消费，页面不读" },
-    { "surface": "androidBridge", "method": "adbShell", "reason": "页面侧类型面未声明；ADB 原语面只供引擎插件（linux-env/manage）经桥直读" },
-    { "surface": "androidBridge", "method": "getAdbState", "reason": "页面侧类型面未声明；授权状态面经插件 android-bridge 的工具读，页面不直接读" },
-    { "surface": "androidBridge", "method": "setAdbAllow", "reason": "页面侧类型面未声明；同上（授权面走插件）" },
-    { "surface": "androidBridge", "method": "setAdbPair", "reason": "页面侧类型面未声明；同上（配对码只进 adb argv，绝不出壳）" },
-    { "surface": "androidBridge", "method": "revokeAdbPair", "reason": "页面侧类型面未声明；同上（R6 显式回收由插件触发）" },
-    { "surface": "androidBridge", "method": "discoverAdbPorts", "reason": "页面侧类型面未声明；NSD/盲扫端口由插件消费" },
-    { "surface": "androidBridge", "method": "a11yStatus", "reason": "页面侧类型面未声明；无障碍状态由设置页经插件读取" },
-    { "surface": "androidBridge", "method": "openA11ySettings", "reason": "页面侧类型面未声明；跳系统设置页由插件/设置页触发" },
-    { "surface": "androidBridge", "method": "unlockRestrictedSettings", "reason": "页面侧类型面未声明；受限设置解锁由插件触发" },
-    { "surface": "backGateBridge", "method": "getBackAvailable", "reason": "页面侧只声明了上行 setAvailable；getter 供设备侧断言/自证，页面声明待补（本轮登记为已知缺口，不假绿）" }
+    { "surface": "backGateBridge", "method": "getBackAvailable", "reason": "页面侧只声明了上行 setAvailable；getter 供设备侧断言/自证，页面声明待补（本轮登记为已知缺口，不假绿）" },
+    { "surface": "consoleBridge", "method": "ready", "reason": "页面不轮询 ready()：会话状态由壳侧主动 pushStatus() 推给页面（ConsoleActivity.kt:68/114），页面用推来的 state==='ready' 驱动按钮使能，故无调用点。保留为壳侧只读探针面（供调试与外部断言）；G-6 把它纳入扫描面后必须登记，否则删掉它不会有任何门禁报警" }
   ],
   "tsOnly": [],
   "setterWithoutGetter": [
-    { "surface": "androidBridge", "setter": "setAdbAllow", "reason": "开关事实值经 getAdbState 的 JSON 组合返回（allowSwitch 字段），无独立 getter；页面不直接读该通道" },
-    { "surface": "androidBridge", "setter": "setAdbPair", "reason": "配对是命令而非可回读状态；读面是 getAdbState().paired（无独立 getter）" }
+    { "surface": "androidBridge", "method": "setRootGranted", "reason": "issue #262（0.14.2-fx-2-root.1）：读面是复合状态 rootGrantState()（granted/consentValid/channelRoot 一次带出），写方法自身即写后回读返回同一全量 JSON——单字段 getter 会造成第二份真源，故有意不设" },
+    { "surface": "androidBridge", "method": "setRootConsent", "reason": "issue #262（0.14.2-fx-2-root.1）：同 setRootGranted——同意位只是 rootGrantState() 的一个字段，写后回读已覆盖读面" }
   ],
   "preferenceGetters": [
     { "surface": "androidBridge", "method": "getOverlayEnabled", "reason": "返回持久化偏好，而非 OverlayController.isEnabled 事实值（偏好 && canDrawOverlays && 服务在场）——ST-02 已改壳侧判定，桥面 getter 仍返偏好；本条保留至桥面同步事实值" },

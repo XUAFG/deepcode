@@ -125,14 +125,13 @@ cat > stage-root/home/.dsh/profiles/web/cordis.patch.yml <<'PATCH_EOF'
       name: '@dsh-android/dsh-android-vdisplay'
 # Default model（0.13.0 C3 修正）：deepseek-official（壳注入 DEEPSEEK_API_KEY，开箱即用）——
 # 不再 pin opencode-go（OpenCode Zen Go 端点实测 404，见 profile-web.cordis.patch.yml 注释）。
+# 0.14.2-fx-2：就地按上游 id 覆盖 config（不再 disable + 换 -mobile id insert）——换 id 会让
+# session-controller 的 agentDefaultModel 供给依赖那条自定义 entry，它 pending 即服务静默消失。
+# 注意 config 是整体替换，provider 与 model 两个键都必须给全。
 - id: agent-default-model
-  disabled: true
-- insert:
-    - id: agent-default-model-mobile
-      name: '@deepseek-ai/dsh-agent-default-model'
-      config:
-        provider: deepseek-official
-        model: deepseek-v4-flash
+  config:
+    provider: deepseek-official
+    model: deepseek-v4-flash
 PATCH_EOF
 # Review 2026-08-18 (CP1): eliminate dual-copy drift — the authoritative patch is the main repo's
 # scripts/profile-web.cordis.patch.yml (relative to the repo root). The heredoc above is only an offline
@@ -216,7 +215,10 @@ if grep -q 'process.platform === "android" ? \[\] : \["/tmp"\]' "$PSANDBOX"; the
 sed -i 's|"/tmp",|...(process.platform === "android" ? [] : ["/tmp"]),|' "$PSANDBOX"
 echo "dsh-sandbox writableRoots patch applied"
 fi
-tar -cf - $EXCLUDES -C "$ROOT" usr -C "$ROOT/stage-root" home/.dsh 2>"$ROOT/home/tarerr.txt" | xz -9 -T0 > "$ROOT/home/snapshot/snapshot.tar.xz"
+# 并发上限（0.14.1 系统级约束）：设备侧快照构建同样不得吃满全部核心——手机 SoC 撑满会让
+# 前台应用（本 App / 模拟器宿主）卡顿甚至触发系统不稳定。统一上限 8，可用 DSH_CPU_THREADS 覆写。
+XZ_THREADS="${DSH_CPU_THREADS:-8}"
+tar -cf - $EXCLUDES -C "$ROOT" usr -C "$ROOT/stage-root" home/.dsh 2>"$ROOT/home/tarerr.txt" | xz -9 -T"$XZ_THREADS" > "$ROOT/home/snapshot/snapshot.tar.xz"
 rm -rf stage-root
 ls -lh "$ROOT/home/snapshot/snapshot.tar.xz"
 echo "DONE"

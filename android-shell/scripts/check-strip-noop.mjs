@@ -16,6 +16,7 @@
 //       node scripts/check-strip-noop.mjs --stage <stageRoot> [--base <base-dsh.tar.xz>]
 // 退出码：0 = 通过；1 = 清单项仍在场 / 锚点缺席 / 反 no-op 未命中；2 = 用法或输入不可读。
 import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
+import { TAR } from './lib/shell.mjs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -45,7 +46,7 @@ if (process.argv.includes('--self-test')) {
       writeFileSync(p, 'x')
     }
     const tarPath = join(tmp, name + '.tar')
-    execFileSync('tar', ['-cf', tarPath, '-C', dir, 'home'])
+    execFileSync(TAR, ['-cf', tarPath, '-C', dir, 'home'])
     return tarPath
   }
   const clean = mkTar('clean', ['home/.dsh/settings.yaml'])
@@ -79,7 +80,7 @@ if (items.length === 0) { console.error('CHECK-STRIP-NOOP FAILED：strip.json �
 // 输入抽象：stage 树 → 文件系统；tar → 成员集合
 let tarEntries = null
 if (tar) {
-  try { tarEntries = new Set(execFileSync('tar', ['-tf', tar], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean)) }
+  try { tarEntries = new Set(execFileSync(TAR, ['-tf', tar], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean)) }
   catch (e) { console.error('CHECK-STRIP-NOOP FAILED：tar 不可读（' + e.message + '）'); process.exit(2) }
 }
 const stripPrefix = 'home/.dsh/'
@@ -106,7 +107,7 @@ else check('锚点 home/.dsh/settings.yaml 在场', existsSync(join(stage, 'home
 if (base) {
   if (!existsSync(base)) { check('--base 可读: ' + base, false); } else {
     let baseEntries
-    try { baseEntries = new Set(execFileSync('tar', ['-tf', base], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean)) }
+    try { baseEntries = new Set(execFileSync(TAR, ['-tf', base], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }).split('\n').map((s) => s.trim()).filter(Boolean)) }
     catch (e) { check('--base 可读: ' + base, false, e.message); baseEntries = new Set() }
     const inBase = (rel, dir) => {
       const full = stripPrefix + rel

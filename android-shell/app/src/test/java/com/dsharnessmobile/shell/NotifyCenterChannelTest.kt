@@ -159,9 +159,11 @@ class NotifyCenterChannelTest {
     assertEquals("结果未知", NotifyEntry(kind = "report", outcome = "future-kind").outcomeLabel())
     assertEquals("", NotifyEntry(kind = "report").outcomeLabel())
 
-    assertEquals("-" , NotifyEntry(kind = "report").durationLabel())
-    assertEquals("8.4s", NotifyEntry(kind = "report", durationMs = 8_400).durationLabel())
-    assertEquals("1m24s", NotifyEntry(kind = "report", durationMs = 84_000).durationLabel())
+    // 0.14.1 批 3（P3-3）：时长口径统一为中文「分秒」；未知回**空串**而不是 "-"
+    // （旧断言把 `-` / `8.4s` / `1m24s` 三种写法当契约，已按唯一真源反向）。
+    assertEquals("", NotifyEntry(kind = "report").durationLabel())
+    assertEquals("8.4秒", NotifyEntry(kind = "report", durationMs = 8_400).durationLabel())
+    assertEquals("1分24秒", NotifyEntry(kind = "report", durationMs = 84_000).durationLabel())
     assertEquals("自定义", NotifyEntry(kind = "report", durationMs = 1, durationLabel = "自定义").durationLabel())
   }
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env node
-// check-build-chain-abort.mjs — 构建链「任一 ABI 被拒 = 整链非 0」门禁（0.13.8-b 实锤）。
+// check-build-chain-abort.mjs — 构建链「任一 ABI 被拒 = 整链非 0」门禁（0.13.8-b 实锤；review C2 收紧）。
 //
 // 背景：build-apk-013.ps1 -Suffix '' 空跑发版链时，arm64 侧 overlay 门禁判红 -> 打印「拒绝打包（arm64）」
 // 并 continue，随后照常打印「=== 完成 ===」并以 exit 0 结束，产物目录只剩 x86_64 的 APK
 // => 静默交付单 ABI 产物（发版时 = 缺 ABI 的 release 而无人察觉）。
 //
-// 断言：
-//   A. 静态（默认，CI 可跑）：build-apk-013.ps1 每处 per-ABI 拒绝都必须把该 ABI 记入 $rejectedAbis；
-//      脚本必须含「已产出/被拒 ABI」汇总行 + 两条非 0 退出守卫（被拒非空 / 产出为空）。
-//   B. 静态：云端链 build-apk.mjs 不得有「门禁失败仅打印后继续」的 per-ABI 静默跳过。
-//   C. 动态（--self-test）：抽出真实文件的尾部守卫块，用合成状态驱动：
-//      被拒非空 -> 非 0；全部产出 -> 0（不误伤）；零产出 -> 非 0；去掉守卫的副本 -> 0（守卫承重）。
-//      （不做整链空跑：真实链会被前置门禁先行拦下，与本守卫无关，见坑 94。）
+// review C2（2026-09-14）实锤：门禁曾只 grep 中文文案 `拒绝打包（$abi）`，而机密 / 运行时资产 / A1
+// 三处拒绝路径的文案不含该括号形态且**不记 $rejectedAbis**，恰好在盲区（实测 PASS 12 处，漏 3 处）。
+// 收紧后的判据全部走**机器标识**：
+//   A. 构建链只允许在 `function Deny-Abi` 内自增 $rejectedAbis（全文件恰好一处）；
+//   B. 每个含 `continue` 的拒绝行必须调用 `Deny-Abi`（白名单只放 $OnlyAbi 的正常跳过）；
+//   C. elf-check 必须捕获退出码再判定（不得管道直连 Select-Object 吞掉 $LASTEXITCODE）。
+//   D. 云端链 build-apk.mjs 不得有「门禁失败仅打印后继续」的 per-ABI 静默跳过。
+//   E. 动态（--self-test）：用真实脚本抽出的 Deny-Abi + 尾部守卫驱动：
+//      被拒非空 -> 非 0；全部产出 -> 0；零产出 -> 非 0；去掉守卫 -> 0（守卫承重）；
+//      并逐条驱动**真实调用行**（机密 / 运行时资产 / A1 三处原盲区）→ 全部必须非 0。
 //
 // 用法：node scripts/check-build-chain-abort.mjs [--self-test] [--require]
 import { existsSync, readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
@@ -42,20 +45,51 @@ const skip = (why) => {
 
 const ps1Rel = resolveRepoPath('scripts/build-apk-013.ps1')
 let ps1Text = ''
+let helper = ''
 if (!ps1Rel) { check('本地链脚本在场: scripts/build-apk-013.ps1', false) } else {
   ps1Text = readFileSync(join(ROOT, ps1Rel), 'utf8')
-  const rejection = ps1Text.split('\n').map((l, i) => ({ l, n: i + 1 }))
-    .filter(({ l }) => /拒绝打包（\$abi）|拒绝发布组装（\$abi）/.test(l))
-  check('本地链存在 per-ABI 拒绝路径（断言有对象）', rejection.length > 0, '找到 ' + rejection.length + ' 处')
-  const unrecorded = rejection.filter(({ l }) => !/\$rejectedAbis \+= \$abi/.test(l))
-  check('每处 per-ABI 拒绝都记入 $rejectedAbis（' + rejection.length + ' 处）', unrecorded.length === 0,
-    '未记账行: [' + unrecorded.map(({ n }) => 'L' + n).join(', ') + ']')
+  const lines = ps1Text.split('\n')
+
+  // ── A. 唯一自增点：Deny-Abi helper ─────────────────────────────────────────
+  const helperStart = ps1Text.indexOf('function Deny-Abi(')
+  const helperEnd = helperStart >= 0 ? ps1Text.indexOf('\n}', helperStart) + 2 : -1
+  helper = helperStart >= 0 && helperEnd > helperStart ? ps1Text.slice(helperStart, helperEnd) : ''
+  check('统一拒绝函数 Deny-Abi 在场', helperStart >= 0)
+  const increments = [...ps1Text.matchAll(/\$(?:[A-Za-z]+:)?rejectedAbis \+= \$abi/gi)]
+  check('$rejectedAbis 只在 Deny-Abi 内自增一次（全文件命中 ' + increments.length + ' 处）',
+    increments.length === 1 && /\$script:rejectedAbis \+= \$Abi/i.test(helper),
+    increments.length === 1 ? 'helper 内未见 $script:rejectedAbis += $Abi' : '多处自增点 = 记账纪律被绕')
+  const rejectEmits = [...ps1Text.matchAll(/Write-Host "拒绝打包（/g)]
+  check('拒绝输出只由 Deny-Abi 发射（Write-Host "拒绝打包（ 命中 ' + rejectEmits.length + ' 处）',
+    rejectEmits.length === 1)
+
+  // ── B. 每个 continue 拒绝行必须走 Deny-Abi ─────────────────────────────────
+  const bareContinue = lines
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /\bcontinue\b/.test(l))
+    .filter(({ l }) => !/^\s*#/.test(l))                   // 注释行不算
+    .filter(({ l }) => !/Deny-Abi/.test(l))
+    .filter(({ l }) => !/\$OnlyAbi -ne \$abi/.test(l))   // 白名单：-OnlyAbi 的正常跳过，不是拒绝
+  check('含 continue 的拒绝行全部调用 Deny-Abi（裸 continue ' + bareContinue.length + ' 处）',
+    bareContinue.length === 0, '未记账行: [' + bareContinue.map(({ n }) => 'L' + n).join(', ') + ']')
+  const denyCalls = lines.filter((l) => /Deny-Abi \$abi/.test(l))
+  check('per-ABI 拒绝路径存在（断言有对象）', denyCalls.length > 0, '找到 ' + denyCalls.length + ' 处')
+
+  // ── C. elf-check 退出码 ────────────────────────────────────────────────────
+  const elfPiped = lines.filter((l) => /elf-check\.mjs/.test(l) && /\|\s*Select-Object/.test(l))
+  check('elf-check 不得管道直连 Select-Object（会吞退出码语义）', elfPiped.length === 0,
+    elfPiped.map((l) => l.trim()).join(' | '))
+  check('elf-check 退出码被捕获并判定（$elfCode + Deny-Abi）',
+    /\$elfCode\s*=\s*\$LASTEXITCODE/.test(ps1Text) && /\$elfCode -ne 0[^\n]*Deny-Abi/.test(ps1Text))
+
+  // ── 尾部守卫 ──────────────────────────────────────────────────────────────
   check('含「已产出 / 被拒 ABI」汇总行', /汇总。已产出 ABI/.test(ps1Text))
   check('被拒非空 -> exit 1', /if \(\$rejectedAbis\.Count -gt 0\)[^\n]*exit 1 \}/.test(ps1Text))
   check('产出为空 -> exit 1', /if \(\$producedAbis\.Count -eq 0\)[^\n]*exit 1 \}/.test(ps1Text))
   check('成功路径记入 $producedAbis', /\$producedAbis \+= \$abi/.test(ps1Text))
 }
 
+// ── D. 云端链 ────────────────────────────────────────────────────────────────
 const mjsRel = resolveRepoPath('dsh-mobile-apk/scripts/build-apk.mjs')
 if (!mjsRel) { check('云端链脚本在场: dsh-mobile-apk/scripts/build-apk.mjs', false) } else {
   const text = readFileSync(join(ROOT, mjsRel), 'utf8')
@@ -64,25 +98,42 @@ if (!mjsRel) { check('云端链脚本在场: dsh-mobile-apk/scripts/build-apk.mj
   check('云端链失败路径抛错/非 0 退出', /throw new Error|process\.exit\(1\)/.test(text))
 }
 
+// ── E. 动态自检 ──────────────────────────────────────────────────────────────
 if (!argv.includes('--self-test')) {
   console.log('（默认模式：仅静态断言；动态自检用 --self-test）')
 } else if (process.platform !== 'win32') {
   skip('动态自检需要 Windows/PowerShell')
-} else if (!ps1Text) {
-  skip('本地链脚本不可读，无法做尾部块动态验证')
+} else if (!ps1Text || !helper) {
+  skip('本地链脚本不可读或 Deny-Abi 不能抽取，无法做动态验证')
 } else {
   const tail = ps1Text.split('\n')
     .filter((l) => /producedList|rejectedList|汇总。已产出 ABI|rejectedAbis\.Count|producedAbis\.Count/.test(l))
     .join('\n')
+  // 真实调用行（原盲区三处 + 其它，抽出驱动）：Deny-Abi 后 continue 的整行取子句（函数调用本身）。
+  const realCallLines = ps1Text.split('\n')
+    .filter((l) => /Deny-Abi \$abi/.test(l) && /continue/.test(l))
+    .map((l) => (/(Deny-Abi \$abi "[^"]*")/.exec(l) || [])[1])
+    .filter(Boolean)
+  const blindSpotCalls = realCallLines.filter((l) => /机密|运行时补丁|A1 出厂值/.test(l))
+  check('动态用例有对象：原盲区三处（机密/运行时资产/A1）调用行被抽出', blindSpotCalls.length === 3,
+    '抽出 ' + blindSpotCalls.length + ' 条: ' + blindSpotCalls.join(' | '))
+
   const work = mkdtempSync(join(tmpdir(), 'chainabort-'))
   const q = (s) => "'" + s + "'"
-  const runTail = (rejected, produced, useGuard = true) => {
-    const body = useGuard ? tail
-      : tail.replace(/if \(\$rejectedAbis\.Count -gt 0\)[^\n]*exit 1 \}/, '')
-        .replace(/if \(\$producedAbis\.Count -eq 0\)[^\n]*exit 1 \}/, '')
-    const script = ['$rejectedAbis = @(' + rejected.map(q).join(',') + ')',
-      '$producedAbis = @(' + produced.map(q).join(',') + ')', body].join('\n')
-    const p = join(work, 'tail-' + (rejected.join('') || 'none') + '-' + (produced.join('') || 'none') + (useGuard ? '' : '-noguard') + '.ps1')
+  const runTail = (rejected, produced, opts = {}) => {
+    const body = opts.useGuard === false ? tail
+      .replace(/if \(\$rejectedAbis\.Count -gt 0\)[^\n]*exit 1 \}/, '')
+      .replace(/if \(\$producedAbis\.Count -eq 0\)[^\n]*exit 1 \}/, '') : tail
+    const script = [
+      '$rejectedAbis = @(' + rejected.map(q).join(',') + ')',
+      '$producedAbis = @(' + produced.map(q).join(',') + ')',
+      "$abi = 'arm64'",
+      helper,
+      ...(opts.calls ?? []),
+      body,
+    ].join('\n')
+    const tag = (rejected.join('') || 'none') + '-' + (produced.join('') || 'none') + (opts.tag ?? '')
+    const p = join(work, 'tail-' + tag + '.ps1')
     writeFileSync(p, script)
     return spawnSync('pwsh', ['-NoProfile', '-File', p], { cwd: ROOT, encoding: 'utf8', timeout: 120000 })
   }
@@ -95,8 +146,15 @@ if (!argv.includes('--self-test')) {
   check('动态：全部产出 -> exit 0（不误伤成功路径，实得 ' + rB.status + '）', rB.status === 0)
   const rC = runTail([], [])
   check('动态：零产出且无被拒 -> 非 0（实得 ' + rC.status + '）', rC.status !== 0)
-  const rNG = runTail(['arm64'], ['x86_64'], false)
+  const rNG = runTail(['arm64'], ['x86_64'], { useGuard: false })
   check('动态（反证）：去掉尾部守卫后同状态 exit 0（守卫承重，实得 ' + rNG.status + '）', rNG.status === 0)
+  // 原盲区三处：直接跑真实调用行 —— 任一未记账都会让被拒集合为空并 exit 0（review C2 的核心回归）。
+  for (const call of blindSpotCalls) {
+    const r = runTail([], ['x86_64'], { calls: [call + ';'], tag: '-blind' })
+    const out = (r.stdout || '') + (r.stderr || '')
+    check('动态（原盲区）：' + call.slice(0, 40) + '... -> 非 0 且记入被拒', r.status !== 0 && out.includes('被拒 ABI: [arm64]'),
+      'status=' + r.status + ' out=' + out.split('\n').find((l) => l.includes('汇总')) || '')
+  }
   rmSync(work, { recursive: true, force: true })
 }
 
@@ -105,5 +163,5 @@ if (failures.length > 0) {
   console.error('CHECK-BUILD-CHAIN-ABORT FAILED（' + failures.length + ' 项）：' + failures.slice(0, 5).join('；'))
   process.exit(1)
 }
-console.log('CHECK-BUILD-CHAIN-ABORT PASSED（per-ABI 拒绝已记账 + 汇总 + 非 0 退出守卫'
-  + (argv.includes('--self-test') ? '；动态自检含反证' : '') + '）')
+console.log('CHECK-BUILD-CHAIN-ABORT PASSED（Deny-Abi 唯一记账 + 每个 continue 拒绝走 Deny-Abi + elf 退出码判定'
+  + (argv.includes('--self-test') ? '；动态自检含原盲区三处驱动与反证' : '') + '）')

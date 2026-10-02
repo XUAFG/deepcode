@@ -299,7 +299,7 @@ export function resolveRef(
   }
   if (kind === 'id') {
     const hit = byId.get(value)
-    if (!hit) return { ok: false, error: `id "${value}" 不在最近一次 dump 中（页面可能已变化）——请重新 android_ui_dump` }
+    if (!hit) return { ok: false, error: `id "${value}" 不在最近一次取树结果中（页面可能已变化）——请重新取树（android_ui_dump 或 android_ui_tree）` }
     return { ok: true, node: hit.n }
   }
   // 消歧后缀：#N（第 N 个匹配）/ @nX（限定在 nX 子树内）
@@ -319,7 +319,7 @@ export function resolveRef(
   let pool = nodes
   if (scopeId !== '') {
     const scope = byId.get(scopeId)
-    if (!scope) return { ok: false, error: `作用域 ${scopeId} 不在最近一次 dump 中——请重新 android_ui_dump` }
+    if (!scope) return { ok: false, error: `作用域 ${scopeId} 不在最近一次取树结果中——请重新取树（android_ui_dump 或 android_ui_tree）` }
     if (scopePool) {
       const v2Pool = scopePool(scopeId)
       if (v2Pool && v2Pool.length > 0) pool = v2Pool
@@ -335,7 +335,7 @@ export function resolveRef(
   }
   const cands = pool.filter((n) => (kind === 'text' ? n.text === t : kind === 'desc' ? n.desc === t : n.rid === t))
   if (cands.length === 0) {
-    return { ok: false, error: `没有 ${kind} 为 "${t.slice(0, 30)}" 的节点${scopeId ? `（作用域 ${scopeId}）` : ''}——请重新 android_ui_dump 确认当前页面` }
+    return { ok: false, error: `没有 ${kind} 为 "${t.slice(0, 30)}" 的节点${scopeId ? `（作用域 ${scopeId}）` : ''}——请重新取树（android_ui_dump 或 android_ui_tree）确认当前页面` }
   }
   if (occurrence > 0) {
     if (occurrence > cands.length) {

@@ -182,6 +182,18 @@ test('状态路由：浏览器会话（上游 connection 栅栏放行）→ 200�
   assert.equal(noCookie.code, 401)
 })
 
+test('状态路由：connection 的动态 authority 保持权威，401 可由当前 control token 补足', async () => {
+  factsCacheReset()
+  const dynamic = makeCtx({
+    requestRejection: (req) => req.headers?.host === 'dsh.example.test:9443' ? 401 : 403,
+  })
+  apply(dynamic.ctx)
+  const tokenAccepted = await call(dynamic, { headers: { host: 'dsh.example.test:9443' } })
+  assert.equal(tokenAccepted.code, 200, '动态 authority 不得被本地 3080 常量误拒')
+  const forged = await call(dynamic, { headers: { host: 'attacker.invalid' } })
+  assert.equal(forged.code, 403, 'connection 的 403 不得被 control token 绕过')
+})
+
 test('卸载回收路由；重新装载只有一份注册（无重复 handler）', async () => {
   factsCacheReset()
   const first = makeCtx(undefined)
@@ -193,7 +205,12 @@ test('卸载回收路由；重新装载只有一份注册（无重复 handler）
   const second = makeCtx(undefined)
   apply(second.ctx)
   assert.equal(second.routes.size, 1)
-  assert.equal(second.registered.length, 1, '档位工具只注册一次')
+  // 0.14.0 批：档位工具 + 18 个动作工具（契约 BROWSER_TOOLS 全量落地）。
+  assert.equal(second.registered.length, 19, '档位 + 动作工具各注册一次')
+  const registeredNames = new Set(second.registered.map((t) => t.name))
+  for (const name of Object.values(BROWSER_TOOLS)) {
+    assert.ok(registeredNames.has(name), '契约工具未注册：' + name)
+  }
 })
 
 test('契约冻结：工具名 / op 名 / 路由名 / 档位 id 与方案口径一致', () => {
@@ -201,7 +218,7 @@ test('契约冻结：工具名 / op 名 / 路由名 / 档位 id 与方案口径�
   assert.equal(BROWSER_OPS.caps, 'browserCaps')
   assert.equal(BROWSER_OPS.viewport, 'browserViewport')
   assert.equal(BROWSER_ROUTES.status, '/api/android/browser/status')
-  assert.deepEqual(VIEWPORT_PRESETS.map((p) => p.id), ['phone-portrait', 'tablet', 'desktop-720', 'desktop-1080'])
+  assert.deepEqual(VIEWPORT_PRESETS.map((p) => p.id), ['device', 'phone-portrait', 'portrait-720', 'portrait-1080', 'tablet', 'tablet-landscape', 'desktop-720', 'desktop-1080'])
   assert.deepEqual(IDENTITY_PROFILES.map((p) => p.id), ['android-real', 'linux-desktop', 'windows-desktop'])
   assert.equal(IDENTITY_PROFILES.find((p) => p.id === 'android-real').requiresConfirm, false, '默认真实身份不得要求二次确认')
   for (const id of ['linux-desktop', 'windows-desktop']) {

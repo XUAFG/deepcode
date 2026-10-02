@@ -4,22 +4,30 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { apply, liveFacts } from '../lib/index.js'
 
-function makeCtx(services) {
+function makeCtx(services = {}) {
   const routes = new Map()
   const tools = []
+  const resolvedServices = {
+    connection: { requestRejection: () => undefined },
+    ...services,
+  }
   const target = {
     tools: { register(t) { tools.push(t) } },
     webServer: { register(route) { routes.set(route.path, route); return () => { routes.delete(route.path) } } },
-    get: (name) => services[name],
+    get: (name) => resolvedServices[name],
+    // 0.14.1 块 E：两条 runtime-cache 路由按「注册即 effect」注册（热重载/卸载必须回收路由，
+    // 不留重复 handler）。桩 ctx 必须提供 effect，否则 apply() 在路由段抛
+    // 「ctx.effect is not a function」——这不是产品缺陷，而是桩缺能力。
+    effect(cb) { cb(); return () => {} },
   }
   return { ctx: target, routes, tools }
 }
 
-async function callRoute(harness, path) {
+async function callRoute(harness, path, req = { method: 'GET', headers: { host: '127.0.0.1:3080' } }) {
   const route = harness.routes.get(path)
   assert.ok(route, '路由必须注册：' + path)
   const res = { code: 0, body: '', headers: {}, writeHead(c, h) { this.code = c; this.headers = h ?? {} }, end(b) { this.body = b ?? '' } }
-  await route.handler({}, res)
+  await route.handler(req, res)
   assert.equal(res.code, 200)
   return JSON.parse(res.body)
 }
@@ -88,4 +96,28 @@ test('ST-16：配方含三键来源标签，且工具面/状态路由仍在场',
   const status = await callRoute(harness, '/api/android/env/status')
   assert.equal(status.adbTier, 'T0')
   assert.deepEqual(harness.tools.map((t) => t.name).sort(), ['android_env_recipe', 'android_toolchain_status'])
+})
+
+test('#222：环境 exact 路由在读取状态/配方前拒绝未认证与伪造 Host', async () => {
+  const harness = makeCtx({
+    connection: undefined,
+    sandboxPolicy: { defaultMode: 'workspace-write' },
+    androidPrivilege: { status: () => ({ tier: 'T0' }) },
+  })
+  apply(harness.ctx)
+  for (const path of ['/api/android/env/status', '/api/android/env/recipe']) {
+    const route = harness.routes.get(path)
+    assert.ok(route, '路由必须注册：' + path)
+    const unauthorized = { code: 0, body: '', headers: {}, writeHead(c, h) { this.code = c; this.headers = h ?? {} }, end(b) { this.body = b ?? '' } }
+    await route.handler({ method: 'GET', headers: { host: '127.0.0.1:3080' } }, unauthorized)
+    assert.equal(unauthorized.code, 401, path + ' 未认证必须 401')
+    assert.equal(unauthorized.headers['cache-control'], 'no-store')
+    assert.ok(!unauthorized.body.includes('workspace') && !unauthorized.body.includes('profilePatch'), path + ' 未认证不得泄漏环境内容')
+
+    const forged = { code: 0, body: '', headers: {}, writeHead(c, h) { this.code = c; this.headers = h ?? {} }, end(b) { this.body = b ?? '' } }
+    await route.handler({ method: 'GET', headers: { host: 'attacker.invalid' } }, forged)
+    assert.equal(forged.code, 403, path + ' 伪造 Host 必须 403')
+    assert.equal(forged.headers['cache-control'], 'no-store')
+    assert.equal(forged.body, '', path + ' 403 必须空体')
+  }
 })

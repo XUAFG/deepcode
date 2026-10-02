@@ -24,9 +24,18 @@ on:
         description: 'APK 版本后缀（默认空=正式版纯净版本号；测试构建显式传 -fix 等）'
         type: string
         default: ''
+      source_audit:
+        description: '仅在来源审计 PR 分支上运行固定源码/签名输入构建'
+        type: boolean
+        default: false
 
 jobs:
+  source-audit:
+    if: ${{ inputs.source_audit }}
+    uses: ./.github/workflows/build-apk-source.yml
+
   build:
+    if: ${{ !inputs.source_audit }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -54,13 +63,30 @@ jobs:
         uses: actions/setup-java@v4
         with: { distribution: temurin, java-version: '17' }
 
-      - name: 构建插件（6 个含 build 脚本的；dsh-host-web-compat 用已提交 lib）
+      # 0.14.0 CI/CD 修复 C-3：有锁文件的目录一律走 `npm ci`（按锁文件可复现装配）。
+      # 原实现全用 `npm install`——它**忽略锁文件**、现场重新解析依赖：dsh-client-ui-responsive 的
+      # @deepseek-ai 链路被 ^ 区间放大到 0.1.5-rc.2，与本包精确钉 0.1.5-rc.1 冲突，npm install
+      # 直接 ERESOLVE，云端重建链自 2026-08-28 起从未成功过（本地 CI 同样是这条根因）。
+      # 无锁文件的目录（dsh-host-web-compat 用已提交 lib；dsh-model-capability 无锁）保持 install。
+      - name: 构建插件（有锁文件走 npm ci；dsh-host-web-compat 用已提交 lib）
         shell: bash
         run: |
           set -e
-          for d in plugins/dsh-android-bridge plugins/dsh-android-manage plugins/dsh-android-linux-env plugins/dsh-android-file-open plugins/dsh-model-capability dsh-shell-termux dsh-client-ui-responsive; do
+          install_deps() {
+            if [ -f "$1/package-lock.json" ]; then
+              echo "  deps: npm ci（锁文件在场，可复现）"
+              (cd "$1" && npm ci --no-audit --no-fund)
+            else
+              echo "  deps: npm install（无锁文件，按 package.json 解析）"
+              (cd "$1" && npm install --no-audit --no-fund)
+            fi
+          }
+          # 顺序有意义：dsh-shell-termux 必须**先**构建 —— plugins/dsh-android-linux-env 通过 `file:../../dsh-shell-termux`
+          # 依赖它，编译期解析其 lib/ 类型面；若它尚未构建，tsc 报 TS2307 Cannot find module。
+          for d in dsh-shell-termux dsh-client-ui-responsive plugins/dsh-android-bridge plugins/dsh-android-manage plugins/dsh-android-linux-env plugins/dsh-android-file-open plugins/dsh-model-capability plugins/dsh-android-browser plugins/dsh-android-vdisplay; do
             echo "== npm build $d =="
-            (cd "$d" && npm install --no-audit --no-fund && npm run build)
+            install_deps "$d"
+            (cd "$d" && npm run build)
           done
 
       - name: stage 底座归档（base/ -> .deploy-tmp/<base-dir>/）

@@ -23,6 +23,13 @@
       "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
     },
     {
+      "op": "browserClose",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
+    },
+    {
       "op": "browserOpen",
       "faces": [
         "A11Y_OPS"
@@ -72,6 +79,27 @@
       "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
     },
     {
+      "op": "browserTabs",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
+    },
+    {
+      "op": "browserFollowTab",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
+    },
+    {
+      "op": "browserCloseTab",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "browser* 是壳桥 op（侧栏 AI 浏览器宿主半），不经无障碍通道——插件契约 plugins/dsh-android-browser/src/contract.ts 明确「browser* 不进 A11Y_OPS」（方案 §4.5）。永久豁免，非临时缺口。"
+    },
+    {
       "op": "vdCreate",
       "faces": [
         "A11Y_OPS"
@@ -100,11 +128,53 @@
       "reason": "vd* 是虚拟屏 Shizuku 特权通道 op（像素合成在壳侧 SurfaceView），不经无障碍通道——plugins/dsh-android-vdisplay/src/status.ts 的声明；随六处登记落地时生效。永久豁免。"
     },
     {
+      "op": "vdLaunchApp",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "vd* 是虚拟屏 Shizuku 特权通道 op（像素合成在壳侧 SurfaceView），不经无障碍通道——plugins/dsh-android-vdisplay/src/status.ts 的声明；随六处登记落地时生效。永久豁免。"
+    },
+    {
+      "op": "vdInput",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "vd* 是虚拟屏 Shizuku 特权通道 op（像素合成在壳侧 SurfaceView），不经无障碍通道——plugins/dsh-android-vdisplay/src/status.ts 的声明；随六处登记落地时生效。永久豁免。"
+    },
+    {
       "op": "vdInfo",
       "faces": [
         "A11Y_OPS"
       ],
       "reason": "vd* 是虚拟屏 Shizuku 特权通道 op（像素合成在壳侧 SurfaceView），不经无障碍通道——plugins/dsh-android-vdisplay/src/status.ts 的声明；随六处登记落地时生效。永久豁免。"
+    },
+    {
+      "op": "shExec",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "sh* 是 0.14.0 §6 特权 shell 通道 op（壳侧 Shizuku UserService，经控制队列投递），不经无障碍通道——plugins/dsh-android-bridge/src/shell-ops.ts 的声明。永久豁免。"
+    },
+    {
+      "op": "shPull",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "sh* 是 0.14.0 §6 特权 shell 通道 op（壳侧 Shizuku UserService，经控制队列投递），不经无障碍通道——plugins/dsh-android-bridge/src/shell-ops.ts 的声明。永久豁免。"
+    },
+    {
+      "op": "shPush",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "sh* 是 0.14.0 §6 特权 shell 通道 op（壳侧 Shizuku UserService，经控制队列投递），不经无障碍通道——plugins/dsh-android-bridge/src/shell-ops.ts 的声明。永久豁免。"
+    },
+    {
+      "op": "shRemove",
+      "faces": [
+        "A11Y_OPS"
+      ],
+      "reason": "sh* 是 0.14.0 §6 特权 shell 通道 op（壳侧 Shizuku UserService，经控制队列投递），不经无障碍通道——plugins/dsh-android-bridge/src/shell-ops.ts 的声明。永久豁免。"
     }
   ]
 }

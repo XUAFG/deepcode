@@ -146,19 +146,25 @@ object NotifyBridge {
    * @param kind 交互类型（question/approval）；缺省取 pending 表里的记录，再兜底 question
    * @return pending 表里是否确有该条目（false = 已被撤/从未登记，仍已撤通知）
    */
-  fun markSettled(context: Context, eventId: String, kind: String? = null): Boolean {
+  fun markSettled(context: Context, eventId: String, kind: String? = null, remote: Boolean = false): Boolean {
     val p = synchronized(pending) { pending.remove(eventId) }
-    val k = kind ?: p?.kind ?: "question"
     p?.state = "settled"
+    val k = kind ?: p?.kind
+    if (k == null) {
+      // S3-10：进程重启后 pending 表是空的，而旧实现回落成 "question"——于是一条**审批**的 cancel
+      // 帧会去结算提问那一条 ID，审批通知连同它的「批准一次/拒绝」按钮**留在通知栏上**（点了没反应）。
+      // 现在无记录时不猜 face：两个候选 ID 都撤（同一 eventId 至多只有一条在场）。
+      NotifyCenter.cancel(context, eventId)
+      LogCollector.log(TAG, "settled(untracked eventId=" + eventId + ") cancelled both faces")
+      return false
+    }
     // DEF-NOTIFY-03b：经 RemoteInput 回复过的通知会被平台锁住（LIFETIME_EXTENDED_BY_DIRECT_REPLY），
     // 直接 cancel 无效——必须重投一次再撤，故统一走 settleInteractive。
-    NotifyCenter.settleInteractive(context, k, eventId)
-    LogCollector.log(TAG, "settled(eventId=" + eventId + " kind=" + k + " tracked=" + (p != null) + ")")
+    // S3-9：cancel 帧不一定代表**本机**提交过（别处已答 / 引擎撤销），文案必须区分。
+    NotifyCenter.settleInteractive(context, k, eventId, remote)
+    LogCollector.log(TAG, "settled(eventId=" + eventId + " kind=" + k + " remote=" + remote + " tracked=" + (p != null) + ")")
     return p != null
   }
-
-  private fun faceOf(kind: String): NotifyCenter.Face =
-    if (kind == "approval") NotifyCenter.Face.APPROVAL else NotifyCenter.Face.QUESTION
 
   // ── 下行帧 ──────────────────────────────────────────────────────────────
 
@@ -265,7 +271,9 @@ object NotifyBridge {
         // 引擎侧权威：该待答已结清（谁答的都算）——撤通知（NT-13 的核心判据）
         val id = value.optString("eventId")
         if (id.isNotEmpty()) {
-          val settled = markSettled(context, id)
+          // S3-9：cancel 帧的含义是「这条待答已经不在了」——可能是别的设备/应用内答的，也可能是
+          // 引擎撤销的；无论哪种，**本机都没提交过**，回执不能说「已提交」。
+          val settled = markSettled(context, id, remote = true)
           probe("cancel(eventId=" + id + ") settled=" + settled)
         }
       }

@@ -27,14 +27,21 @@ bridge 的 `session/event` 监听在干净安装时缺少事件声明，导致 T
 ## 1. 仓库概览与技术栈
 
 - **角色**：DeepSeek Harness 安卓壳应用（包名 `com.dsharnessmobile.shell`）。
-- **职责边界**：只保留安卓平台权能与桥——前台服务、看门狗、WebView、SAF 桥、快照解压与更新、崩溃回退闸门（UndoGate）、ADB 授权原生写面（AdbState）、审计、内置控制台、日志。**AI 可见能力全部来自插件**。
-- **运行时形态**：壳内嵌 Termux 运行时快照（`assets/snapshot.tar.xz` → `files/usr` + `files/home`）；引擎（Node.js `@deepseek-ai/dsh`，基线 0.1.1-rc.2）监听 `127.0.0.1:3080`；WebView 加载引擎 Web UI。
+- **职责边界**：只保留安卓平台权能与桥——前台服务、看门狗、WebView（主 + 隔离 BrowserHost）、SAF 桥、快照解压与更新、崩溃回退闸门（UndoGate）、Shizuku 特权 transport 与虚拟屏、无障碍/ADB 授权原生写面、通知中心与通知内应答、返回网关、审计、内置控制台、日志。**AI 可见能力全部来自插件**。
+- **运行时形态**：内嵌Termux快照；0.14.3源码目标为官方预发布0.2.0-rc.2 / 639ed015397290b3745d163aafe02ffee4aa3f84，监听127.0.0.1:3080；尚无本轮双ABI快照/APK证明。
 - **构建链**：minSdk 26 / targetSdk 34 / compileSdk 36；Kotlin 2.0.21；AGP 8.8.2；Java 17。
-- **依赖**：androidx.activity-ktx / core-ktx、commons-compress、xz；Shizuku 零依赖反射（ShizukuSupport.kt，仅探活示例）。
-- **兄弟仓库**（协调仓库下的子目录）：`dsh-shell-termux`（Termux 执行器）、`dsh-client-ui-responsive`（移动 UI 注入层 + F5 消费端）、`dsh-host-web-compat`（页面注入/兼容）、`plugins/`（dsh-android-bridge / -manage / -linux-env / -file-open，协调仓库内）、`vendor/`（dshmarketplace-plugin、dsh-undo-savepoint 固化副本 + PATCHES.md）。
+- **依赖**：androidx.activity-ktx / core-ktx、dynamicanimation、commons-compress、xz；Shizuku `dev.rikka.shizuku:api/provider 13.1.5`（直连 transport）。
+- **兄弟仓库**（协调仓库下的子目录）：`dsh-shell-termux`（0.2.0，Termux 执行器 + 工具链单一表）、`dsh-client-ui-responsive`（0.3.3，移动 UI 注入层 + 来件消费端）、`dsh-host-web-compat`（0.1.13，页面注入/兼容）、`plugins/`（bridge 0.2.4 / manage 0.3.0 / model-capability 0.2.1 / file-open 0.1.0 / browser 0.1.0 / linux-env 0.1.2 / vdisplay 0.1.0，协调仓库内）、`vendor/`（dshmarketplace-plugin、dsh-undo-savepoint 固化副本 + PATCHES.md）。
 - **上游** `deepseek-ai/deepseek-harness`（本地 checkout `dsh/`）：只读参考，**零改动**；一切适配以补丁层/插件/壳侧实现。
-- **历史版本状态（当前以 AGENTS.md 与上游集成文档为准）**：**0.13.3 开发中（vc30；引擎 0.1.2-rc.1 overlay + /api 浏览器鉴权 EngineAuth（P0 token 交换/P1 自 mint cookie）+ MuxClient /api/remote.mux $events 流重做 + pi-drift-F1 降级补丁 + withResolvers polyfill（host-web-compat 0.1.9）+ 字体滑杆退役（ui-responsive 0.1.13）+ vendor/dsh-model-sync；W1-W8 代码面全绿，回归与 push/PR 待用户口令）**。0.13.2 已发布**（Release v0.13.2 正式版，versionCode 29，2026-09-05，tag 落 main，15 资产，prerelease=false；详见更新记录表与协调仓 AGENTS.md §1）。0.13.2-preview（28）与 0.13.1（27）被其取代。**0.13.2 含悬浮球 v2.1 全套 + 用户实测三连修（deriveHalo/乐观置忙+bridge 0.1.2 turn_start/吸边同心）+ 快照刷新看门狗闸门（坑 37）**（#118 引擎启动/探活/UndoGate 五项 + 悬浮球 v2 重设计 + v2.1 三窗口/待答卡片/状态模板批 + 设置页全屏（ui-responsive 0.1.12）+ #120 工作区，详见更新记录表）。当前开放跟踪：#115（市场 Phase2，目标 0.13.2）、#120（添加工作区按键不可用——修复批已实施，待发版验证）、#108（数据备份 feature）。
+- **版本状态**：当前Gradle声明0.14.3 / versionCode45；本轮仍未构建、未验收。历史版本及资产见版本档案，不用0.14.0-preview替代现行状态。
 - **环境无关声明**：本文档适用于任意环境（Windows/WSL/Linux/macOS、有/无真机）开发维护者；环境差异点（WSL、ADB 真机、run-as）已在对应章节标注。
+
+## 0.14.3 当前分工与构建钩子交接
+
+- 本source/doc任务只读源码和改文档，不执行tests/build/typecheck/checks/device/Git变更。父任务停止点必须包含#308正常CI/review合并、完整0.14.3同步、双ABI tester APK交付；外部代码/CDP/ADB测试另行执行，不因待外测暂停合并或提前停止，也不写测试通过。发布未授权。
+- registry/apply-patches已接PTC A1与官方pi streaming020；A1覆盖host/child，streaming覆盖六provider并在G2之前执行；source-build reconcile与最终快照检查已读additionalTargets及exact verifier。普通build-snapshot的post-apply已改为统一runner --check --scope engine，覆盖companion targets与exact verifier；streaming描述marker不再被错误当产物literal文本。具体台账见 [运行时补丁](<dsh-mobile-apk/docs/AGENTS/RUNTIME-PATCHES.md>)。
+- 目标0.2的三条runtime assets必须从目标原始产物/同源补丁重出并最终逐字节对账。历史字节数不是0.14.3测量；不要为文档填造新尺寸/hash。组件lib重建/自包含镜像、root与后续集成PR拆分、版本/changelog/notes及最终构建证据由父任务负责。
+- 构建脚本内置门禁按原安全严格度执行，不人为关闭；其结果单列“构建内置检查”，不代替外部完整验收。完整来源链同工作区双跑、真实UID0/boot lease反证、三层设备与arm64发布前补充由外测按 [测试需求](<docs/0.14.3-TEST-REQUIREMENTS.md>) 留证。
 
 ## 2. 构建与验证命令
 
@@ -46,7 +53,7 @@ pwsh -File scripts\build-apk-013.ps1 -Fast
 # 快照（Termux 源 + TARGETS 预装（scripts/snapshot-config/preinstall.json）+ licenses + pnpm 装配 + 瘦身 + xz -T0 归档）：
 node scripts\build-snapshot-013.mjs <arm64|x86_64>
 # 插件单测/冒烟：
-node scripts\smoke-bridge.mjs                             # bridge 18 断言
+node scripts\smoke-bridge.mjs                             # bridge 冒烟（现 22 断言，grep -c assert 现数）
 cd ..\dsh-client-ui-responsive && npm test && npm run build
 cd ..\plugins\dsh-android-<pkg> && npm run build
 ```
@@ -59,16 +66,44 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 > - 门禁脚本能用流式并行就用（Python 侧 `tarfile` 单遍流式，勿反复解压同一归档）。
 > 新增构建步骤若只能单线程，必须在脚本注释里写明原因（例：9p 写带宽是瓶颈，并行无收益）。
 
-**门禁（build-apk-013.ps1 内）**：vendor 统一补丁（scripts/patches/apply-patches.mjs：marketplace A-D + undo E1-E7，registry.json 驱动，勿加 Select-First）→ 快照单 pass 注入（inject-all.py：@dsh-android + 根级插件 + 权威 patch 覆盖一次 tar 流完成，压缩 ×4→×1；DSH_INJECT_PRESET 默认 9 / -Fast 传 1）→ 挂载集⊇注入集（check-patch-mounts.mjs）→ 机密（check-snapshot-secrets.mjs，跨平台替代 .ps1）→ **第三方合规（check-third-party.mjs，GPL 义务）** → elf-check（双模式：快照 node ELF 架构门禁防坑 18 / 单 ELF 遗留）→ 许可资产拷贝（LICENSES → assets/licenses）→ gradle。
+**门禁（build-apk-013.ps1 内）**：聚合入口 `scripts/check-release-gates.mjs`（`--list` 现数，不维护数量；接进本地链 / 云端 `build-apk.mjs` / 两仓 CI / 发布链 `build-release.ps1`，发布链 `--run --require` 要求 SKIP=0）。内容 = vendor 统一补丁（`scripts/patches/apply-patches.mjs`：marketplace A-D/U2 + undo E1-E8/U1，registry.json 驱动，勿加 Select-First）→ 快照单 pass 注入（`inject-all.py`，补齐 + 修剪双向对齐）→ 注入产物完整性（`check-inject-completeness.mjs`）→ 挂载集（`check-patch-mounts.mjs`）→ 机密（`check-snapshot-secrets.mjs`）→ 第三方合规（`check-third-party.mjs`）→ 路由鉴权（`check-api-route-auth.mjs`）→ 工具 schema / 控制 op / 状态登记 / 桥对称 / 门禁 SKIP / 性能插桩 / Kotlin 注释 / 构建链中止 / strip no-op → 运行时资产（`check-runtime-assets.mjs`）→ 快照指纹（`check-snapshot-fingerprint.mjs`）→ elf-check → 许可资产拷贝（LICENSES → assets/licenses）→ gradle。
+
+**本地发布链（`build-release.ps1`）的 gradle 调用必须与开发链同口径（0.14.2-fx-2 修）**：发布链原用**系统 gradle**
++ `--offline --rerun-tasks`，而开发链（`build-apk-013.ps1`）用项目 wrapper 且不带 `--offline` —— 系统 gradle 的依赖缓存里
+没有本工程的 AndroidX 产物，离线档下 arm64-v8a/x86_64 组装**必失败**（`No cached version of androidx.webkit:webkit:1.12.1
+available for offline mode`，22s 即 break），且该行把 gradle 输出重定向进 `$null`，日志里只剩一句 `APK build failed (…)`。
+现统一为 `.\gradlew.bat :app:assembleDebug --no-daemon -PversionNameSuffix="$Version"`。**改任何一条链的调用前先问：另一条链是不是这条命令**（详档见坑 194）。
 
 **云端构建（0.13.0 起，宿主=本仓库，自包含）**：`.github/workflows/build-apk.yml`（`workflow_dispatch` 手动，matrix arm64/x86_64）托管整套构建链并只操作本仓库——快照从源重建（`base/` 底座归档为输入，Git LFS）、6 个缺 lib/ 的插件 npm 构建、注入/门禁/gradle 全部云端完成，仅 `upload-artifact` 供本地下载 debug，不出 Release；**不依赖协调库**（私库，GITHUB_TOKEN 无法签出）。`build-apk.mjs` 以 `DSH_APK_DIR=$GITHUB_WORKSPACE` 指向本仓库（gradle 在此）。本地仍在协调库根跑 `pwsh scripts\build-apk-013.ps1`（`scripts/` 前缀）。
 
-**设备验证链路**（真机 arm64 vivo V2425A `10AF2B0GN0001F2`；模拟器 MuMu x86_64 `127.0.0.1:16416/7555`）：
+**APK 根目录传递约定**：云端 workflow 与本地来源链都显式传 `DSH_APK_DIR`；`check-runtime-assets.mjs` 必须优先使用该绝对根目录，不能仅凭 `ROOT/dsh-mobile-apk` 猜测协调仓布局。`--require` 仍严格要求该根下 `app/src/main/assets/patched`、快照和 registry 在场；缺件不得 SKIP 或自动生成。 `build-apk-013.ps1` 同样保留前置布局自检测得到的 `$apkDir`，不得在版本解析后重新硬编码 `Root\dsh-mobile-apk`。 发布链临时文件也不得假设 `$env:TEMP` 在所有 PowerShell runner 上存在；跨平台脚本使用 `[IO.Path]::GetTempPath()`。
+
+**来源审计构建（ARM64）**：固定官方Harness 639ed015397290b3745d163aafe02ffee4aa3f84 / 0.2.0-rc.2，workflow检查packageManager pnpm11.7.0及Node范围 ^22.19.0 || >=24.0.0（来源runner使用Node24）。不启用LFS、不读旧base快照；第一方产物由固定源码构建并记录manifest/commit/hash。Electron桌面bundle不属于Android CLI部署闭包，构建脚本临时排除并留provenance；Cordis依赖按本次官方源码，不回退旧版源码伪装新pin。Termux bootstrap固定SHA认证、官方InRelease验签与逐deb哈希仍执行；node-pty源码/NDK与上游原生二进制输入分别披露，不声称全部本地编译。固定debug签名与apksigner自证沿用，真实APK/hash/provenance待构建后记录；source后缀与artifact名不代表另一签名。
+
+**同工作区复跑**：两处源码 clone 可复用，但固定 commit 的 fetch/detach/assert 仍执行；bootstrap 与 NDK 只在固定哈希命中时复用，损坏/半包重下，解包前校验不省略。Harness 阶段从本次 `GITHUB_SHA` 恢复权威 overlay，先复位专用源码 checkout（保留 ignored 依赖），deploy 只清理验证过的专用目标。`source-chain-rerun.test.mjs` 使用本 workflow 的实际守卫和本地假输入覆盖 cache-hit/miss、下载中断、坏字节拒绝解包、依赖保留与清理边界；CI 与本地预检均调用。来源链两次完整运行的证据不得由局部守卫测试代替。
+
+**派发前必须本地预检**：`node scripts/source-build/preflight-source-chain.mjs`。远程 `build-apk-source` 一次 60-90 分钟，而近期判红的几类问题（市场补丁锚点失配、期望补丁集过期、与上游脱钩）**都能在本地提前复现**。预检覆盖五面：① 是否落后 `upstream/main`（合并会换掉链的输入，坑 204/204 都出在合并之后）② 登记表补丁对仓库镜像自洽（`apply-patches --check`）③ 市场插件链按 workflow 里钉的 URL+sha256 取发布产物、解包、打补丁，再与 `vendor/dshmarketplace-plugin/` 逐字节比对 ④ 来源链单测 ⑤ `check-code-map`。版本与哈希都从 workflow 读，不在脚本里重复钉。`--no-network` 可跳过取件与 `git fetch`（此时发布产物必须已在 `.deploy-tmp/component-sources/` 缓存里）。
+
+来源流程的 marketplace 用**固定 npm 发布产物**：`curl` 拉 `dshmarketplace-plugin-0.1.7.tgz` → `sha256sum --check` 对照钉在 workflow 里的哈希 → 解包进 `vendor/dshmarketplace-plugin`（**不再从其 `src/` 重建**，也不参与插件源码构建循环）。理由：仓库镜像与全部 market-* 补丁都按发布字节定义（`vendor/dshmarketplace-plugin/PATCHES.md`），重建会用不同工具链产出不同字节并把补丁锚空（0.1.5 时代就是这样，见坑 205；此前靠适配器里一段源码构建专用改写兜着，已随 0.1.7 退役）。随后运行 `node scripts/source-build/apply-source-marketplace-patches.mjs vendor --apply`：这一步**不修改共享补丁器**，适配器只把生成副本的 `HERE` 指回 `scripts/patches`，然后按原参数执行；共享 runner、生成 runner、registry、适配器自身及补丁后产物的哈希写入 `marketplace-patch-adapter.json`。锚点整体失配不需要适配器兜底——共享执行器对「check 为假且 apply 零改动」本就判红并拒报 ALL OK。已登记的移动端补丁（包括 `/api/dshmarketplace/*` 鉴权）先施加到解包产物，随后 API 路由门禁才能检查最终注入文件。artifact 的 `marketplace-source-provenance.json` 记录发布 tarball URL 与哈希、包版本、补丁 registry/实现哈希及补丁后 lib 哈希。
+
+Harness按固定0.2.0-rc.2源码完成全仓构建；prepare-harness-vendor-overrides保留来源登记接口但不再把五个旧Cordis源码覆盖新官方目标。reconcile-harness-vendor-lock只接受目标pin约束，不以旧importer规则掩盖依赖漂移；来源报告必须记录实际版本/lock。工作区链接仍禁止递归copytree跟随复制。
+
+来源构建还会从本仓九个带 `package-lock.json` 的插件/组件目录执行 `npm ci`。`check-package-lock-roots.mjs` 在 PR 与来源构建的早期步骤核对各目录 `package.json` 与锁文件根声明中的名称、版本及四类依赖，发现镜像后的旧声明就立即报错，避免完成 Harness 和 Termux 构建后才在插件安装阶段失败（坑 196）。锁文件更新后还应对受影响目录运行 `npm ci --dry-run --ignore-scripts --no-audit --no-fund`，因为根声明一致不能证明整份依赖图有效。
+
+`check-android-native-runtime-packages.mjs` 对部署树中的 `.node` / `.node.wasm` 逐文件计数、取哈希，并只接受已审计包族。固定 Harness 当前依赖图还带入 trycua、ubjs、sherpa-onnx 与 node-addon-require-builtin 的 Linux GNU 原生文件；它们作为跨平台部署的外平台 payload 记录，不视为 Android 绑定。新增版本、不同架构路径或未知包族继续拒绝；匹配用例在 PR 与来源构建入口运行（坑 197）。
+
+快照构建器沿用boot-pending标签调用当前dsh-app-boot的auditStartupEntries回归，required pending/failed致命、optional第三方告警；该构建内置检查不是本轮外部验收。本source/doc分工没有执行任何测试/检查。
+
+`check-dsh-source-snapshot.mjs` 的内置预设载体断言与权威门禁 `check-engine-overlay.mjs` 的 CARRIERS 同源，清单在 `scripts/source-build/preset-carriers.mjs`：载体是 `agent-preset/skills/` 与 `web-app/presets/`（0.1.7 把 `dsh-agent-presets` 拆成 agent-preset + agent-preset-registry 后的新形态），判据是目录在场且递归文件数 ≥ 1。`preset-carriers.test.mjs` 读权威源文本双向比对两侧载体集合——权威源重锚而本侧没跟上的话，判红落在秒级的 PR 门禁上，而不是四十分钟后的云端构建（坑 200）。
+
+来源链在构建期会把 `@deepseek-ai/*` 从 `scripts/snapshot-config/engine-overlay.json` 摘除（否则快照构建器会按登记表回拉上游发布版 tarball，整目录覆盖已注入的源码产物），摘除清单记进 `source-build-policy.json`；APK 步骤先由 `scripts/source-build/restore-overlay-pins.mjs` 把这份清单并回去，再跑门禁集——`check-contract.mjs` 第 7 节正是按它定运行时版本、并判 profile 里引擎包 insert 行是否与运行时同版（该门禁在拿不到 semver 时 SKIP，旧链因此从未真判过）。还原记录进策略 provenance，退出 trap 覆盖回原文件（坑 201）。
+
+**设备验证链路**（真机 arm64 vivo V2425A；模拟器 MuMu x86_64 竖屏 `127.0.0.1:16416`、横屏 `127.0.0.1:16384`——横屏实例勿改回竖屏）：
 - 安装：`adb -s <serial> install -r -t out\v<版本>\...apk`（同签名 debug.keystore；**指纹变更触发 refreshSnapshot 全量重解压（真机 ≈2-4 分钟、模拟器实测 ~8 分钟，勿在解压中杀进程——中途杀进程看门狗会拿半解压运行时拉引擎，见坑 37）**）。
 - 引擎探活：`adb -s <serial> forward tcp:23080 tcp:3080` → `http://127.0.0.1:23080/`。
 - WebView 调试：`adb shell "cat /proc/net/unix | grep webview_devtools"` → `forward tcp:29225 localabstract:webview_devtools_remote_<pid>`（**每次重启 pid 变**）→ CDP ws 连接后 Runtime.evaluate 驱动（例子脚本见 `.deploy-tmp/cdp-*.mjs`；断言注意 input placeholder 不在 innerText 里）。
 - 远程 RPC（测试面）：POST `/api/<method>`，body 必须全信封 `{"type":"client-request","rpcId":"r1","method":"session.list","payload":{}}`；`session.prompt` 拒绝 live 会话（被 UI 打开的）——直接 API 测代理需先用 session.create 建全新会话。
-- **构建前核对 ABI（见坑 18）**：无真机环境用模拟器（MuMu x86_64 `127.0.0.1:16416/7555`），有真机则安装 ABI 匹配的 APK——debug 包默认带 x86_64 快照，覆盖装到 arm64 真机会引擎崩溃。
+- **构建前核对 ABI（见坑 18）**：无真机环境用模拟器（MuMu x86_64 竖屏 `127.0.0.1:16416` / 横屏 `127.0.0.1:16384`），有真机则安装 ABI 匹配的 APK——debug 包默认带 x86_64 快照，覆盖装到 arm64 真机会引擎崩溃。
 
 ## 3. 环境无关的开发/维护流程（新人先读此节再动手）
 
@@ -81,8 +116,8 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 | Windows + WSL | **必须在 WSL 跑**（Termux 源/依赖闭包需 Linux；见 3.4） | PowerShell 直跑 | ADB 真机 或 MuMu |
 | Windows 无 WSL | **不可本地构建快照**（跳过 3.2 步 2，用已发布快照/CI 产物） | 可 | MuMu（debug 包默认 x86_64 快照可用） |
 | Linux / macOS | 直接跑（无 WSL 层，路径用 `/`） | 直接跑 | ADB 真机（arm64 需匹配快照） |
-| 无真机 | — | — | MuMu x86_64 `127.0.0.1:16416/7555`（装 x86_64 包） |
-| 有真机 arm64 | — | — | vivo V2425A `10AF2B0GN0001F2`（**必须装 arm64 快照包**，坑 18） |
+| 无真机 | — | — | MuMu x86_64 竖屏 `127.0.0.1:16416` / 横屏 `127.0.0.1:16384`（装 x86_64 包） |
+| 有真机 arm64 | — | — | vivo V2425A（**必须装 arm64 快照包**，坑 18） |
 
 ### 3.2 新环境起步流程（克隆 → 首包 → 装机验证）
 
@@ -92,6 +127,18 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 4. **ABI 核对（坑 18）**：`aapt dump badging <apk>` 看 native-code，或解快照 tar 读 `usr/bin/node` 的 ELF e_machine（**62=x86_64，183=arm64**）——与目标设备一致再装。
 5. **装机**：真机 `adb -s <serial> install -r -t out\v<版本>\...apk`（同签名 debug.keystore，坑 10）；模拟器 `adb -s 127.0.0.1:16416 install -r -t ...-x86_64.apk`。**首装/指纹变 → refreshSnapshot 全量重解压（真机 ≈2-4 分钟、模拟器 ~8 分钟），勿杀进程（坑 37）**。
 6. **验证**：`adb -s <serial> forward tcp:23080 tcp:3080` → `http://127.0.0.1:23080/`；WebView CDP 与 RPC 信封写法见第 2 节。
+7. **插件依赖（门禁真检的前提，2026-09-22 补）**：聚合门禁会**真加载**插件构建产物（`check-tool-output-schema` 动态 import 每个插件入口、`check-protocol-v2` 跑 manage 的 lib 产物），故这些目录本机必须有 `node_modules`：
+   - `plugins/dsh-android-*/`（`manage` 的 `@deepseek-ai/dsh-tools` 同时是引擎校验器来源，缺席时该门禁整体 SKIP）；
+   - `dsh-shell-termux/`（`plugins/dsh-android-linux-env/lib/index.js` → `@dsh-android/dsh-shell-termux` → 四个 peer 依赖 `@deepseek-ai/dsh-bash-local` / `dsh-shell` / `dsh-subprocess` / `dsh-sandbox` @ `0.1.5-rc.1`。**这一个目录没装，聚合链会在第 6 条门禁处中止，后面 20 多条一条都不跑**）。
+   装法（registry 已配 `registry.npmmirror.com`，各目录 `npm install` 即可）：
+
+   ```powershell
+   # 协调仓根与 dsh-mobile-apk/ 两棵树各自独立，都要装
+   Get-ChildItem plugins -Directory | ForEach-Object { Push-Location $_.FullName; npm install; Pop-Location }
+   Push-Location dsh-shell-termux; npm install; Pop-Location
+   ```
+
+   未装时的行为是**如实 SKIP 并计数**（`SKIP(#n) 宿主缺 peer 依赖：…`），`--require`（本地链/发布链）下判红——不允许用 SKIP 冒充绿。
 
 ### 3.3 改动流程规范（改哪个仓库、改完必做三件事）
 
@@ -120,40 +167,4 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 | run-as 限制 | run-as 裸环境无 termux-exec 钩子 → `not executable: 64-bit ELF` / `CANNOT LINK` 是**假错误**；验证快照内二进制须带全套引擎 env（`LD_PRELOAD` + `TERMUX_EXEC__*` + `LD_LIBRARY_PATH` + `OPENSSL_CONF`） | 坑 22 |
 | PowerShell 转义 | 双引号内 `$var` 本地展开（引号地狱）；二进制经 `adb exec-out`/push 传输 | 坑 8 |
 | ABI 匹配 | debug 包默认 x86_64 快照，装 arm64 真机必崩；构建/安装前核对（3.2 步 4） | 坑 18 |
-
-## Ubuntu 共享存储候选版（2026-09-08）
-
-根仓库 `overlay-fs-adapter.py ABI --storage` 注入 fs 插件和 host-web-compat 存储桥；`build-baseline.py ABI --storage` 生成独立 local-storage APK，保留原候选包。两个 ABI 的 overlay 可并行，APK 构建仍串行。存储设计及实测见根仓库 docs/STORAGE.md；私有策略和共享策略具有不同原子性保证。
-
-### Ubuntu 语音/性能预览构建
-
-先在两个 `plugins/dsh-android-{voice-input,performance}` 目录执行 `npm ci --legacy-peer-deps`、`npm test`。本地根运行 `source scripts/env.sh`；已有 Debian bundle 后执行 `python3 scripts/overlay-fs-adapter.py arm64 --voice-debug`、`python3 scripts/build-baseline.py arm64 --voice-debug`。ASR 引擎须先经 `scripts/build-asr-lab.py` 构建，打包时校验 receipt 中 SHA 和 16KiB ELF 对齐，附许可证。预览只支持 ARM64；模型独立存在平板共享 work/models/qwen3-asr，不塞入 APK。
-
-voice-debug 还需先构建 `dsh-client-ui-responsive`（字号快捷键）；overlay 会替换其本仓产物。构建脚本自动执行 `scripts/build-voice-vad.py`，固定 libfvad 532ab666c20d3cfda38bca63abbb0f152706c369，NDK ARM64/API26/16KiB 对齐，打包 libdsh_vad.so 与 LICENSE/PATENTS/AUTHORS。独立收据 artifacts/voice-vad-build.json。
-
-### 工作台补丁（2026-09-09）
-
-voice-debug overlay 额外装配 dsh-client-input-gamepad 与 dsh-client-ui-voice-deck；运行 scripts/patch-voice-deck.py 从已验证发布快照生成 runtime/renderer/conversation/workspace bundle。脚本检查原文锚点次数并保存前后 SHA，漂移则失败。三个输入相关插件须各自 npm ci && npm test；原导入 Deck 已存档，不依赖 workspace:^ 或缺失 voice-asr。
-
-### 折叠 UI 验收（Ubuntu，2026-09-10）
-先构建 responsive、voice-deck、fold-transition 插件。`overlay-fs-adapter.py x86_64 --deck-ui` + `build-baseline.py x86_64 --deck-ui` 打入当前 UI/插件与 Debian，原生本地 ASR 仍仅 ARM64 voice-debug；不能拿 x86 性能代替玄戒。两 ABI 的 Gradle 构建必须串行（共用 assets/jniLibs），最终交付以 APK 内快照摘要和安装后 fingerprint 为准。
-
-### 本地 Codex ARM64 构建
-
-上下文隔离补丁从固定快照生成；图片目录同步修复同时存在于
-`app/src/main/assets/patched/attachment-local-index.js` 启动资产。后者会在每次启动
-覆盖运行时模块，因此改附件实现时不能只改 snapshot。装机验收
-`scripts/verify-codex-release.py` 会对照 APK asset 和设备文件字节。
-
-根目录 `scripts/overlay-fs-adapter.py arm64 --codex` 与 `scripts/build-baseline.py arm64 --codex` 保留 voice-debug 能力并嵌入 Codex。原生 runtime tarball 按插件 runtime-lock.json 校验，NDK 27.2 编译两个 launcher。产物为独立 local-codex，勿用其他 ABI 覆盖；仍须串行构建。
-
-### 保留快照的 responsive client 更新（2026-09-11）
-
-`source scripts/env.sh && python3 scripts/rebuild-codex-shell.py` 会先构建响应式插件，将 lib/client.js 打入 assets/patched/responsive-client.js，再构建 ARM64 壳；收据记录 responsive_client_patch_sha256 并抽验 APK 内资产一致。引擎启动前只对固定包名、版本 0.1.13、基线 SHA 99b6daf… 或 runtime-patches 中记录的上次受管 SHA 原子更新。不覆盖未知内容或新版本；snapshot 指纹不变，无需重解压。升级后同时验证实际运行文件和页面逻辑，不能仅查 APK 资产。
-
-
-## 历史 CPU 语音增量链（2026-09-12）
-
-当前完整装配与原生输入见 [语音引擎维护说明](../../../docs/VOICE-KLEIDIAI-PRODUCTION.md)；以下 rebuild 链要求匹配的旧快照与回执。
-
-Ubuntu从仓库根`source scripts/env.sh`，先`python3 scripts/build-voice-engine.py`，再`python3 scripts/rebuild-codex-shell.py`。前者校验固定llama.cpp/KleidiAI、构建优化CPU和复用已验证兼容基线，产出artifacts/voice-engine.json；后者stage-only逐个核对ELF和许可证SHA并写入APK收据。缺兼容基线时可运行 `scripts/build-asr-lab.py --native-only`；该lab明确关闭KleidiAI，不能拿lab APK覆盖当前DeepCode。完整build-baseline.py也已接入正式语音入口。两个ELF均在APK nativeLibraryDir，保持16KiB段对齐和现有snapshot。
+| 工作树行尾噪声 | `git status` 的 ` M` 与 `check-patch-mirror` 的「仅行尾差异」WARN 常来自 autocrlf（一侧检出为 CRLF），**不是**内容漂移。先逐字节复核（`cmp a b` / `git diff --ignore-cr-at-eol`）再决定要不要动文件，别按噪声改内容 | 铁律 5/6 |

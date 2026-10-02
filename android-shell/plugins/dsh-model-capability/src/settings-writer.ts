@@ -184,6 +184,30 @@ export function planModelPatch(rawModels: unknown, patches: ModelPatch[], stamps
   return { models, changes, skipped, written }
 }
 
+/** 写回尝试上限（首尝试 + 至多 2 次重试）。有界：不得无界循环。 */
+export const MAX_WRITE_ATTEMPTS = 3
+/** 重试退避基数（毫秒）。冲突是并发写者的信号，退避让它们先落定。 */
+export const WRITE_RETRY_BACKOFF_MS = 25
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * Renders the two revision numbers a SETTINGS_CONFLICT carries.
+ *
+ * The settings service exposes them as structured fields (
+ * `dsh/packages/settings/settings/src/index.ts:47-51`), so a rejection report can name
+ * both sides instead of only repeating the message. Falls back to the message when the
+ * error came from somewhere else and carries no numbers.
+ * @param error - the rejected write's error.
+ * @returns a ` expected=<n> actual=<n>` suffix, or an empty string.
+ */
+function conflictRevisions(error: unknown): string {
+  const expected = (error as { expected?: unknown })?.expected
+  const actual = (error as { actual?: unknown })?.actual
+  if (typeof expected !== 'number' && typeof actual !== 'number') return ''
+  return ` expected=${String(expected)} actual=${String(actual)}`
+}
+
 export interface SettingsDescriptorLike {
   ns: string
   value: unknown
@@ -220,16 +244,33 @@ export async function applyModelPatch(
   settings: SettingsWriteLike | undefined,
   route: string,
   patches: ModelPatch[],
-  logger?: { info?: (msg: string) => void; warn?: (msg: string) => void },
+  logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; trace?: (msg: string) => void },
   stamps?: StampStore,
+  descriptorOverride?: SettingsDescriptorLike,
 ): Promise<WriteResult> {
   if (!settings) return { wrote: false, reason: 'settings-unavailable', changes: [], skipped: [] }
   if (patches.length === 0) return { wrote: false, reason: 'nothing-to-apply', changes: [], skipped: [] }
 
   const sourceOf = new Map(patches.map((patch) => [patch.id, patch.source ?? '']))
 
-  const run = async (retry: boolean): Promise<WriteResult> => {
-    const descriptor = settings.describe({ namespaces: ['llm-pi-ai'] }).find((d) => d.ns === 'llm-pi-ai')
+  /**
+   * One write attempt. `attempt > 0` means this is a retry, so the caller-supplied
+   * descriptor is ignored and a fresh one is read: a conflict means the revision we
+   * held is stale, and reusing it would fail identically forever.
+   *
+   * L.2（2026-09-26）：旧实现只重试 **1** 次，且重试时丢弃 override。实测（真实 CAS 语义复现）
+   * 单次重试在「同进程还有别的写者」时不够：settings 的 revision 由**服务端** revisions Map
+   * 持有（dsh/packages/settings/settings/src/index.ts:313-315），任何一次别的写入都会推进它；
+   * 而冲突比较发生在 configEditor.edit 的**回调内部**（:390-395），用的是那一刻重算的值。
+   * 于是「describe -> mutate」之间被插进 2 次以上外部推进时，1 次重试必然用尽。
+   * 现改为有界 3 次尝试（首尝试 + 至多 2 次重试），每次重试都重读。
+   */
+  const attemptOnce = async (attempt: number): Promise<WriteResult> => {
+    // 复用调用方刚读到的描述符可省掉一次全量 describe（见 index.ts tick 的成本注释）；
+    // 重试路径必须重读（冲突意味着手里那份 revision 已过期，复用只会再撞一次）。
+    const descriptor = (attempt === 0 && descriptorOverride !== undefined)
+      ? descriptorOverride
+      : settings.describe({ namespaces: ['llm-pi-ai'] }).find((d) => d.ns === 'llm-pi-ai')
     if (!descriptor) return { wrote: false, reason: 'namespace-absent', changes: [], skipped: [] }
     const plan = planModelPatch(modelsOf(descriptor, route), patches, stamps)
     if (plan.changes.length === 0) {
@@ -240,17 +281,30 @@ export async function applyModelPatch(
       if (stamps) {
         for (const field of plan.written) stamps.set(field.id, field.field, { value: field.value, source: sourceOf.get(field.id) ?? '' })
       }
+      if (attempt > 0) logger?.info?.(`dsh-model-capability: write-back for route ${route} succeeded on attempt ${String(attempt + 1)}`)
       return { wrote: true, reason: 'wrote', changes: plan.changes, skipped: plan.skipped, written: plan.written }
     } catch (error) {
-      const code = (error as { code?: string })?.code
-      if (code === 'SETTINGS_CONFLICT' && !retry) {
-        logger?.info?.(`dsh-model-capability: SETTINGS_CONFLICT for route ${route}; retrying once`)
-        return run(true)
+      const conflict = (error as { code?: string })?.code === 'SETTINGS_CONFLICT'
+      if (conflict && attempt + 1 < MAX_WRITE_ATTEMPTS) {
+        // 冲突是可重试的：退避一小段再重读重试。退避让并发写者有机会先落定。
+        logger?.info?.(`dsh-model-capability: SETTINGS_CONFLICT for route ${route}; retry ${String(attempt + 2)}/${String(MAX_WRITE_ATTEMPTS)}`)
+        if (attempt + 1 > 1) await sleep(WRITE_RETRY_BACKOFF_MS * (attempt + 1))
+        return attemptOnce(attempt + 1)
       }
-      logger?.warn?.(`dsh-model-capability: write-back failed for route ${route}: ${(error as Error)?.message ?? String(error)}`)
-      return { wrote: false, reason: code === 'SETTINGS_CONFLICT' ? 'conflict-retry-failed' : 'mutate-rejected', changes: [], skipped: plan.skipped, written: [] }
+      // 诊断（X1 2026-09-25；L.2 2026-09-26 追加 expected/actual）：logger.trace 由 index.ts 接到 diag()
+      // 并落盘 $DSH_HOME/model-capability.log（设备实测该文件确实存在、含 tick/runAutoPass 行），故拒绝真因可见。
+      // 把异常文本 + code + 两侧 revision + 栈交给 logger.warn 与这条落盘 trace。
+      const detail = (error as Error)?.message ?? String(error)
+      const stack = (error as Error)?.stack ?? ''
+      // SettingsConflictError 暴露 expected/actual（settings/src/index.ts:47-51）；取不到时回落 message。
+      const conflictDetail = conflict ? conflictRevisions(error) : ''
+      logger?.warn?.(`dsh-model-capability: write-back failed for route ${route}: ${detail}`)
+      logger?.trace?.(`write-back REJECTED route=${route} revision=${String(descriptor.revision)} attempt=${String(attempt + 1)}`
+        + ` code=${String((error as { code?: string })?.code)} exname=${(error as Error)?.name ?? '?'}${conflictDetail} message=${detail}`
+        + (stack ? ` stack=${stack.replace(/\s+/g, ' ').slice(0, 900)}` : ''))
+      return { wrote: false, reason: conflict ? 'conflict-retry-failed' : 'mutate-rejected', changes: [], skipped: plan.skipped, written: [] }
     }
   }
 
-  return run(false)
+  return attemptOnce(0)
 }

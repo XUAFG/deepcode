@@ -1,5 +1,5 @@
 {
-  "$comment": "快照预装清单与镜像链（build-snapshot-013.mjs 消费）。targets=Termux 预装包（依赖闭包 BFS 自动展开）；android-tools 为 ADB 2.0 执行客户端；termux 无 licenses 包（LICENSES 由基座/仓库文本兜底）。增删预装包只改本文件。",
+  "$comment": "快照预装清单与镜像链（build-snapshot-013.mjs 消费）。targets=Termux 预装包（依赖闭包 BFS 自动展开）；android-tools 已于 0.14.0 退役（内置 adb 移除，特权执行改由壳侧 Shizuku UserService 承载，见 docs/SPEC-0.14.0-ROUND-2026-09-15.md §6）；termux 无 licenses 包（LICENSES 由基座/仓库文本兜底）。增删预装包只改本文件。",
   "mirrors": [
     "https://mirrors.tuna.tsinghua.edu.cn/termux/apt/termux-main",
     "https://packages.termux.dev/apt/termux-main"
@@ -8,7 +8,7 @@
   "targets": [
     "python", "python-pip", "perl", "ruby", "ripgrep", "zip", "vim", "openssl", "openssl-tool",
     "zsh", "socat", "busybox", "dpkg", "termux-exec", "termux-elf-cleaner", "termux-keyring",
-    "android-tools", "git"
+    "git"
   ],
   "pnpm": { "version": "10.12.1", "pkg": "pnpm" },
   "canvas": {

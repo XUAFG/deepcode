@@ -1,7 +1,8 @@
 // FX-205.1-.7 / ST-07 回归（可离线跑：无设备、无引擎、无网络）：
-//  - 三条 exact 路由的插件侧鉴权（Host 白名单 / Origin 同源 / 控制令牌 / 浏览器会话）；
-//  - GET /clean → 405 且工作区零变化；POST /clean 只删本工具自有临时项；
-//  - 路由注册即 effect：卸载回收、重载不产生重复 handler。
+//  - five exact routes are plugin-authenticated before queue reads, ticket lookup, stream, or mutation;
+//  - external delivery creates a blank durable session and an opaque browser draft ticket, never an @path message;
+//  - GET /clean → 405 and POST /clean only removes tool-owned temporary files;
+//  - route registrations are effects: unload removes every handler and reload has no duplicates.
 //
 // 令牌来源走 ST-07 的显式测试开关（DSH_CONTROL_TOKEN_TEST=1 + DSH_CONTROL_TOKEN），
 // 因此本文件同时验证「测试开关下 env 生效」这条路径。
@@ -22,6 +23,8 @@ const { TRUSTED_HOSTS, CONTROL_TOKEN_HEADER, authorizeIncomingRoute } = await im
 const ROUTES = {
   list: '/api/android/file-incoming',
   claim: '/api/android/file-incoming/claim',
+  content: '/api/android/file-incoming/content',
+  complete: '/api/android/file-incoming/complete',
   clean: '/api/android/file-incoming/clean',
 }
 const HOST = TRUSTED_HOSTS[0]
@@ -57,14 +60,11 @@ function makeCtx(connection, extras = {}) {
   const routes = new Map()
   const disposers = []
   const registerCalls = []
-  const calls = { sessionCreate: [], prompt: [], append: 0, workspaceCreate: [], workspaceDelete: [] }
+  const calls = { sessionCreate: [], workspaceCreate: [], workspaceDelete: [] }
   const workspaces = extras.workspaces ?? []
   let seq = 0
-  const appendStub = () => { calls.append += 1 }
   const sessions = extras.sessions ?? {
-    // R1 降级路径才走存储层：命令面在场时不该被调用
-    create() { seq += 1; return { id: 'session-' + '0'.repeat(8) + '-stub' + seq, append: appendStub } },
-    get(id) { return { id, append: appendStub } },
+    create() { seq += 1; return { id: 'session-' + '0'.repeat(8) + '-stub' + seq } },
   }
   const workspaceRegistry = extras.workspaceRegistry ?? {
     async create(path, title) {
@@ -85,7 +85,6 @@ function makeCtx(connection, extras = {}) {
     ? undefined
     : {
       async create(request) { calls.sessionCreate.push(request); return extras.sessionController.create(request) },
-      async prompt(request, signal) { calls.prompt.push({ request, signal }); return extras.sessionController.prompt(request, signal) },
     }
   // cordis 服务面：属性（inject 声明）与 ctx.get 读的是同一批服务。
   const services = { connection, sessionController, sessions, workspaceRegistry }
@@ -110,7 +109,7 @@ function makeCtx(connection, extras = {}) {
   // cordis ReflectService.handler.get 的保真替身：**未声明 inject 的属性访问直接抛**
   // 「cannot get property "<name>" without inject」。0.14.0-preview-SN-1-13 设备实测：
   // Reflect.get(ctx, 'connection') 抛出的异常被上游 webserver 的兜底 catch 成 400
-  // （dsh/packages/host/webserver/src/index.ts:244-251），三条路由整组 400。
+  // （dsh/packages/host/webserver/src/index.ts:244-251），受保护队列路由会整组 400。
   // 该替身让这一缺陷类在离线单测里必红（服务只能经 ctx.get 读取）。
   const ctx = new Proxy(target, {
     get(t, prop, recv) {
@@ -127,11 +126,12 @@ async function boot(ctx) {
   await new Promise((resolve) => setTimeout(resolve, 40))
 }
 
-function fakeReq({ method = 'POST', headers = {}, body } = {}) {
+function fakeReq({ method = 'POST', headers = {}, body, url = '' } = {}) {
   const handlers = {}
   return {
     method,
     headers,
+    url,
     on(event, cb) { (handlers[event] ??= []).push(cb) },
     emit() {
       const payload = Buffer.from(JSON.stringify(body ?? {}))
@@ -142,14 +142,16 @@ function fakeReq({ method = 'POST', headers = {}, body } = {}) {
   }
 }
 
-async function call(ctx, path, { method = 'POST', headers = {}, body, connectionHeaders } = {}) {
+async function call(ctx, path, { method = 'POST', headers = {}, body, url = path } = {}) {
   const route = ctx.routes.get(path)
   assert.ok(route, 'route must be registered: ' + path)
-  const req = fakeReq({ method, headers, body })
+  const req = fakeReq({ method, headers, body, url })
+  const chunks = []
   const res = {
     code: 0, body: undefined, headers: {},
     writeHead(code, h) { this.code = code; this.headers = h ?? {} },
-    end(b) { this.body = b ?? '' },
+    write(chunk) { chunks.push(Buffer.from(chunk)); return true },
+    end(b) { this.body = b ?? (chunks.length === 0 ? '' : Buffer.concat(chunks)) },
   }
   const done = route.handler(req, res)
   if (body !== undefined) req.emit()
@@ -201,7 +203,7 @@ test('FX-205.4 篡改 Host（DNS rebinding 形态）→ 403 / 空体 / 零变化
   assert.deepEqual(snapshot(ws), before, 'Host 被拒时拒绝发生在 handler 副作用之前')
 })
 
-test('FX-205.1 合法令牌 → 三条路由放行（GET 清单 + POST 投递）', async () => {
+test('FX-205.1 合法令牌 → 受保护队列路由放行（GET 清单 + POST 投递）', async () => {
   const ws = freshWorkspace()
   const incoming = join(ws, 'photo.jpg')
   writeFileSync(incoming, 'img')
@@ -222,9 +224,9 @@ test('FX-205.1 浏览器会话（上游 connection 栅栏放行）→ 200；被�
   const ws = freshWorkspace()
   const allowed = makeCtx({ requestRejection: () => undefined })
   await boot(allowed.ctx)
-  const before = snapshot(ws)
   const ok = await call(allowed.ctx, ROUTES.list, { method: 'GET', headers: { host: HOST, cookie: 'dsh-auth=abc' } })
   assert.equal(ok.code, 200)
+  const before = snapshot(ws)
 
   const denied = makeCtx({ requestRejection: () => 401 })
   await boot(denied.ctx)
@@ -321,11 +323,11 @@ test('FX-205.5 无记账清单时 /clean 不删任何东西（fail-safe）', asy
   assert.deepEqual(snapshot(ws), before)
 })
 
-test('FX-205.7 卸载回收三条路由；重新装载只有一份注册（无重复 handler）', async () => {
+test('FX-205.7 卸载回收五条路由；重新装载只有一份注册（无重复 handler）', async () => {
   const first = makeCtx()
   await boot(first.ctx)
   assert.deepEqual([...first.routes.keys()].sort(), Object.values(ROUTES).sort())
-  assert.equal(first.disposers.length, 3, '三条注册必须各包一层 ctx.effect')
+  assert.equal(first.disposers.length, 6, '五条路由和一条 ticket 清理 effect 都必须可回收')
   for (const dispose of first.disposers) dispose()
   assert.equal(first.routes.size, 0, '卸载后路由必须不再应答')
 
@@ -333,7 +335,7 @@ test('FX-205.7 卸载回收三条路由；重新装载只有一份注册（无�
   await boot(second.ctx)
   const perPath = second.registerCalls.filter((p) => p === ROUTES.list).length
   assert.equal(perPath, 1, '同一 path 每次装载只注册一份')
-  assert.equal(second.routes.size, 3)
+  assert.equal(second.routes.size, 5)
 })
 
 test('设备回归：cordis 风格 Context 只能经 ctx.get 读服务（属性访问未 inject 会抛 → 上游兜底 400）', async () => {
@@ -346,66 +348,98 @@ test('设备回归：cordis 风格 Context 只能经 ctx.get 读服务（属性�
   // 设备实测的失效形态：该异常在 handler 内抛出且响应未发送 → 上游 webserver 回 400。
   // 修复后 handler 全程不触发该陷阱：浏览器会话请求照常 200。
   await boot(ctx)
-  const before = snapshot(ws)
   const ok = await call(ctx, ROUTES.list, { method: 'GET', headers: { host: HOST, cookie: 'dsh-auth=abc' } })
   assert.equal(ok.code, 200)
   const withToken = await call(ctx, ROUTES.list, { method: 'GET', headers: legit() })
   assert.equal(withToken.code, 200)
+  const before = snapshot(ws)
   const denied = await call(ctx, ROUTES.list, { method: 'GET', headers: { host: HOST } })
   assert.equal(denied.code, 401)
   assert.deepEqual(snapshot(ws), before)
 })
 
-test('R1 命令面：建会话走 sessionController.create({workspaceId}) + prompt(mode queue, signal 必传)', async () => {
+test('external file stays opaque received until trusted browser creates its blank session and claims a ticket', async () => {
   const ws = freshWorkspace()
-  const probe = join(ws, 'r1-in.txt')
-  writeFileSync(probe, 'x')
+  const probe = join(ws, 'r1-in.png')
+  writeFileSync(probe, 'PNG')
   const createdRequests = []
-  const promptRequests = []
   const harness = makeCtx(undefined, {
     workspaces: [],
     sessionController: {
       async create(request) { createdRequests.push(request); return { sessionId: 'session-abcdef12-3456' } },
-      async prompt(request, signal) { promptRequests.push({ request, aborted: signal.aborted }); return { accepted: true } },
     },
   })
   await boot(harness.ctx)
-  const res = await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: probe } })
-  assert.equal(res.code, 200)
-  await new Promise((resolve) => setTimeout(resolve, 80))
-  assert.equal(createdRequests.length, 1, '命令面 create 必须被调用一次')
-  assert.equal(createdRequests[0].workspaceId, harness.workspaces[0].id, 'create 必须带解析出的 workspaceId（工作区归属）')
-  assert.equal(promptRequests.length, 1, '首轮必须经命令面 prompt 排队')
-  assert.equal(promptRequests[0].request.mode, 'queue')
-  assert.equal(promptRequests[0].request.sessionId, 'session-abcdef12-3456')
-  assert.equal(promptRequests[0].aborted, false, 'signal 必传且未中止')
-  const files = readdirSync(join(ws, '.sessions')).filter((f) => f.endsWith('.json'))
-  assert.equal(files.length, 1)
-  const entry = JSON.parse(readFileSync(join(ws, '.sessions', files[0]), 'utf8'))
-  assert.equal(entry.sessionId, 'session-abcdef12-3456', 'IX-TW-02：条目回写 durable id')
-  assert.equal(harness.calls.append, 0, '命令面成功时不得回落存储层 append')
+  const delivered = await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: probe } })
+  assert.equal(delivered.code, 200)
+  assert.equal(createdRequests.length, 0, 'cold receipt does not create before a browser session exists')
+  const listed = await call(harness.ctx, ROUTES.list, { method: 'GET', headers: legit() })
+  const payload = JSON.parse(listed.body)
+  const item = payload.items[0]
+  assert.equal(createdRequests.length, 0, 'queue read does not create before the trusted client creates its session')
+  assert.equal(item.sessionId, undefined)
+  assert.equal(item.state, 'received')
+  assert.equal(item.name, 'r1-in.png')
+  assert.equal(JSON.stringify(item).includes(probe), false, '状态面不得公开绝对路径')
+  const queueFiles = readdirSync(join(ws, '.sessions')).filter((f) => f.endsWith('.json'))
+  const record = JSON.parse(readFileSync(join(ws, '.sessions', queueFiles[0]), 'utf8'))
+  assert.equal(record.context, undefined, '不得保留旧 @path 首轮上下文')
+
+  const clientSessionId = 'session-abcdef12-3456'
+  const claim = await call(harness.ctx, ROUTES.claim, {
+    headers: legit(), body: { entryId: item.entryId, sessionId: clientSessionId },
+  })
+  assert.equal(claim.code, 200)
+  const ticket = JSON.parse(claim.body).ticket
+  assert.equal(typeof ticket, 'string')
+  assert.equal(existsSync(join(ws, '.sessions', queueFiles[0])), false, 'claim 后不得在重启时复建草稿')
+  const content = await call(harness.ctx, ROUTES.content, {
+    method: 'GET', headers: legit(), url: ROUTES.content + '?ticket=' + encodeURIComponent(ticket),
+  })
+  assert.equal(content.code, 200)
+  assert.equal(Buffer.from(content.body).toString(), 'PNG')
+  assert.equal(String(content.headers['content-type']), 'application/octet-stream')
+  const complete = await call(harness.ctx, ROUTES.complete, {
+    headers: legit(), body: { ticket, outcome: 'draft-ready' },
+  })
+  assert.equal(complete.code, 200)
+  assert.equal(JSON.parse(complete.body).state, 'draft-ready')
 })
 
-test('R1：prompt 失败（模型未配置等）回落存储层 append，不漏件也不静默', async () => {
+test('claim rejects a non-durable browser session before deleting queue state', async () => {
   const ws = freshWorkspace()
-  const probe = join(ws, 'r1-fallback.txt')
+  const probe = join(ws, 'mismatch.txt')
   writeFileSync(probe, 'x')
-  const harness = makeCtx(undefined, {
-    workspaces: [],
-    sessionController: {
-      async create() { return { sessionId: 'session-abcdef12-7777' } },
-      async prompt() { throw new Error('no adapter serves provider') },
-    },
-  })
+  const harness = makeCtx(undefined, { workspaces: [] })
   await boot(harness.ctx)
-  const res = await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: probe } })
-  assert.equal(res.code, 200)
-  await new Promise((resolve) => setTimeout(resolve, 80))
-  assert.equal(harness.calls.prompt.length, 1)
-  assert.equal(harness.calls.append, 1, 'prompt 失败必须回落存储层 append（不丢件）')
-  const files = readdirSync(join(ws, '.sessions')).filter((f) => f.endsWith('.json'))
-  const entry = JSON.parse(readFileSync(join(ws, '.sessions', files[0]), 'utf8'))
-  assert.equal(entry.sessionId, 'session-abcdef12-7777')
+  await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: probe } })
+  const listed = JSON.parse((await call(harness.ctx, ROUTES.list, { method: 'GET', headers: legit() })).body)
+  const before = snapshot(ws)
+  const claim = await call(harness.ctx, ROUTES.claim, {
+    headers: legit(), body: { entryId: listed.items[0].entryId, sessionId: 'session-not-durable' },
+  })
+  assert.equal(claim.code, 409)
+  assert.deepEqual(snapshot(ws), before, '无效 session 不得消费队列或临时文件')
+})
+
+test('claim accepts Android-equivalent /data/user/0 and /data/data workspace prefixes', async () => {
+  const realHome = mkdtempSync(join(tmpdir(), 'dsh-real-home-'))
+  const linkHome = join(mkdtempSync(join(tmpdir(), 'dsh-link-home-')), 'home')
+  symlinkSync(realHome, linkHome, 'junction')
+  process.env.DSH_HOME = linkHome
+  const ws = join(realHome, 'workspaces', 'incoming')
+  mkdirSync(ws, { recursive: true })
+  const probe = join(ws, 'alias.txt')
+  writeFileSync(probe, 'alias')
+  const harness = makeCtx(undefined, { workspaces: [] })
+  await boot(harness.ctx)
+  await call(harness.ctx, ROUTES.list, { method: 'POST', headers: legit(), body: { path: probe } })
+  const listed = JSON.parse((await call(harness.ctx, ROUTES.list, { method: 'GET', headers: legit() })).body)
+  const claimed = await call(harness.ctx, ROUTES.claim, {
+    headers: legit(), body: { entryId: listed.items[0].entryId, sessionId: 'session-abcdef12-alias' },
+  })
+  assert.equal(claimed.code, 200, 'canonical aliases must not turn a live source into 410')
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-file-open-'))
 })
 
 test('R2：同目录非 canonical 毒条目自愈删除并重建为 canonical 条目（IX-TW-01）', async () => {
@@ -424,7 +458,6 @@ test('R2：同目录非 canonical 毒条目自愈删除并重建为 canonical �
     workspaces,
     sessionController: {
       async create() { return { sessionId: 'session-abcdef12-9999' } },
-      async prompt() { return { accepted: true } },
     },
   })
   await boot(harness.ctx)
@@ -450,7 +483,6 @@ test('R2：已有 canonical 可用条目时直接复用（零 create / 零 delet
     workspaces,
     sessionController: {
       async create(request) { createdRequests.push(request); return { sessionId: 'session-abcdef12-2222' } },
-      async prompt() { return { accepted: true } },
     },
   })
   await boot(harness.ctx)
@@ -486,34 +518,25 @@ test('R2 设备形态：可用(canonical)条目与毒条目并存时，毒条目
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-file-open-'))
 })
 
-test('IX-TW-09/R1：遗留 session-N 条目自愈重建；并发补建串行化（每条只建一次）', async () => {
+test('queue read leaves legacy records for the client-side blank-session handoff', async () => {
   const ws = freshWorkspace()
   const probe = join(ws, 'legacy.txt')
   writeFileSync(probe, 'x')
   const sessionsDir = join(ws, '.sessions')
   mkdirSync(sessionsDir, { recursive: true })
-  writeFileSync(join(sessionsDir, 'legacy.json'), JSON.stringify({ ts: 't', path: probe, context: 'c', forcedNewSession: true, sessionId: 'session-1' }))
-  writeFileSync(join(sessionsDir, 'fresh.json'), JSON.stringify({ ts: 't', path: probe, context: 'c', forcedNewSession: true }))
+  writeFileSync(join(sessionsDir, 'legacy.json'), JSON.stringify({ ts: 't', path: probe, forcedNewSession: true, sessionId: 'session-1' }))
+  writeFileSync(join(sessionsDir, 'fresh.json'), JSON.stringify({ ts: 't', path: probe, forcedNewSession: true }))
   let creates = 0
   const harness = makeCtx(undefined, {
     workspaces: [],
-    sessionController: {
-      async create() {
-        creates += 1
-        await new Promise((resolve) => setTimeout(resolve, 5))
-        return { sessionId: 'session-' + String(creates).padStart(8, '0') + '-abc' }
-      },
-      async prompt() { return { accepted: true } },
-    },
+    sessionController: { async create() { creates += 1; return { sessionId: 'session-' + String(creates).padStart(8, '0') + '-abc' } } },
   })
   await boot(harness.ctx)
-  await boot(harness.ctx) // 第二次装载并发触发补建（模拟启动补建 + POST 并发）
-  await new Promise((resolve) => setTimeout(resolve, 200))
-  assert.equal(creates, 2, '两条待建条目各建一次会话（串行化，不重复建）')
-  for (const f of readdirSync(sessionsDir).filter((x) => x.endsWith('.json'))) {
-    const j = JSON.parse(readFileSync(join(sessionsDir, f), 'utf8'))
-    assert.ok(/^session-[0-9a-f]{8}-/.test(j.sessionId ?? ''), 'IX-TW-02：id 必须 durable 形态，实际 ' + String(j.sessionId))
-  }
+  assert.equal(creates, 0, 'cold boot does not create before a browser reads the queue')
+  const listed = JSON.parse((await call(harness.ctx, ROUTES.list, { method: 'GET', headers: legit() })).body)
+  assert.equal(creates, 0, 'server never reissues invisible sessions during a queue read')
+  assert.equal(listed.items.length, 2)
+  assert.equal(listed.items.some((item) => item.state === 'received'), true)
 })
 
 test('鉴权纯函数：trusted host 列表与令牌头常量与壳侧契约一致', () => {

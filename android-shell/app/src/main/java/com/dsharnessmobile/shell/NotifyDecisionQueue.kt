@@ -267,7 +267,12 @@ object NotifyDecisionQueue {
     return when (notReadyAction(d.ts, now)) {
       WaitAction.FAIL -> {
         mark(context, d, State.FAILED, d.attempts, d.waitAttempts)
-        NotifyCenter.postDeliveryFailure(context, d.kind, d.eventId, "提交失败", "提交失败，点击重试")
+        NotifyCenter.postDeliveryFailure(
+          context, d.kind, d.eventId,
+          "提交失败", "引擎长时间没有就绪，你的作答还没送达——可以点「重试」，也可以回应用里重新作答",
+          retryable = true,
+          detail = answerSummary(d),
+        )
         LogCollector.log(
           TAG,
           "decision NOT_READY budget exhausted (" + NOT_READY_BUDGET_MS + "ms): " + d.requestId,
@@ -329,7 +334,12 @@ object NotifyDecisionQueue {
           val attempts = d.attempts + 1
           if (attempts >= MAX_ATTEMPTS) {
             mark(context, d, State.FAILED, attempts)
-            NotifyCenter.postDeliveryFailure(context, d.kind, d.eventId, "提交失败", "提交失败，点击重试")
+            NotifyCenter.postDeliveryFailure(
+              context, d.kind, d.eventId,
+              "提交失败", "你的作答没能送达引擎（已重试 " + attempts + " 次）——可以点「重试」，也可以回应用里重新作答",
+              retryable = true,
+              detail = answerSummary(d),
+            )
             anyFailed = true
             LogCollector.log(TAG, "decision failed after " + attempts + " attempts: " + d.requestId)
           } else {
@@ -343,10 +353,42 @@ object NotifyDecisionQueue {
     return if (anyFailed) Flush.FAILED else Flush.DELIVERED
   }
 
-  /** 明确失效（引擎重启导致 eventId 不在交付表里）：撤通知 + 提示，不静默。 */
+  /**
+   * 明确失效（引擎重启导致 eventId 不在交付表里）：撤通知 + 提示，不静默。
+   *
+   * S3-11：这条提示**不得**带「重试」按钮——决策已被标成 EXPIRED，而 `flush` 只取
+   * PENDING/FAILED，点重试不会有任何事发生（旧实现无条件加重试动作，是个死按钮）。
+   * 引擎侧的请求已经没了，重试的正确做法是回应用重新发起，所以这里只说清后果 + 点击打开应用。
+   */
   fun markExpired(context: Context, decision: Decision) {
     mark(context, decision, State.EXPIRED)
-    NotifyCenter.postDeliveryFailure(context, decision.kind, decision.eventId, "该请求已失效", "该请求已失效（引擎已重启），请重新发起")
+    NotifyCenter.postDeliveryFailure(
+      context, decision.kind, decision.eventId,
+      "该请求已失效", "引擎已重启，这条请求已经不在等待队列里了——重试没有意义，请回到应用重新发起",
+      retryable = false,
+      detail = answerSummary(decision),
+    )
+  }
+
+  /**
+   * 把决策里的 answer 摘要成人话一行（供失败通知带上上下文；S3-12）。
+   *
+   * outcome 的形态随 kind 而异（选项标签 / 自由文本 / 审批决定），这里只取一条**可读**字段，
+   * 取不到就给空串（调用方据此不显示「你所提交的内容」那一行，不编造）。
+   * @param decision - 决策记录（`outcomeJson` 是 `$events/result` 的 outcome 对象）。
+   * @returns 可读摘要（已截断）；无法解析时为空串。
+   */
+  internal fun answerSummary(decision: Decision): String {
+    val o = try { JSONObject(decision.outcomeJson) } catch (_: Exception) { return "" }
+    val raw = when {
+      o.optString("value").isNotBlank() -> o.optString("value")
+      o.optString("label").isNotBlank() -> o.optString("label")
+      o.optString("text").isNotBlank() -> o.optString("text")
+      o.optString("option").isNotBlank() -> o.optString("option")
+      o.optString("outcome").isNotBlank() -> o.optString("outcome")
+      else -> o.optString("type")
+    }
+    return raw.trim().replace(Regex("\\s+"), " ")
   }
 
   /** 指数退避重试（<=60s）；同一时刻只排一个。 */

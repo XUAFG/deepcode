@@ -1,5 +1,11 @@
 # 快照构建 CI/CD 方案（草案 v0.1）
 
+> **已过时（superseded）**：本文描述的是 v0.12.x 时期的草案（CI 下载快照 + checkout 3 个插件仓
+> + `inject-snapshot.py`/`make-snapshot.sh`）。现行实现已改为**自包含云端链**：`dsh-mobile-apk`
+> 仓内 `.github/workflows/build-apk.yml` + `scripts/build-apk.mjs`（快照从源重建、注入/门禁/gradle
+> 全在云端、只 upload-artifact），门禁聚合入口 `scripts/check-release-gates.mjs`。现行命令与
+> 环境说明以 `AGENTS.md` §2 与 `docs/AGENTS/build-and-env.md` 为准。本文仅作历史留档。
+
 > 状态：待确认。目标：把双 ABI APK 构建搬到 GitHub Actions，产物存 workflow artifact，测试闭环后手动发 release。
 
 ## 一、总体流程

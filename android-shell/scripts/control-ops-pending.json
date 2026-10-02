@@ -21,13 +21,17 @@
         "browserCaps",
         "browserShow",
         "browserHide",
+        "browserClose",
         "browserOpen",
         "browserJs",
         "browserInput",
         "browserShot",
         "browserState",
         "browserSetUa",
-        "browserViewport"
+        "browserViewport",
+        "browserTabs",
+        "browserFollowTab",
+        "browserCloseTab"
       ],
       "toolSurface": {
         "file": "plugins/dsh-android-browser/src/contract.ts",
@@ -61,7 +65,9 @@
         "vdDestroy",
         "vdLaunch",
         "vdMoveTask",
-        "vdInfo"
+        "vdInfo",
+        "vdLaunchApp",
+        "vdInput"
       ],
       "toolSurface": {
         "file": "plugins/dsh-android-vdisplay/src/index.ts",
@@ -69,6 +75,33 @@
         "note": "工具注册点在 src/index.ts（ctx.tools.register），op 名与状态面共用 src/status.ts 的 VD_OPS；manage 不承载这些工具。"
       },
       "reason": "虚拟屏 Shizuku 特权通道 op；像素合成在壳侧 SurfaceView（不经无障碍通道）。ROUTE_OPS 本批不落。",
+      "owner": {
+        "engine": "dev-gates / dev-incoming（ControlOp 联合；A11Y_OPS/ROUTE_OPS 不列）",
+        "shell": "dev-shell2（DeviceControlService.handle + ControlProtocolV2.SUPPORTED_OPS）"
+      }
+    },
+    {
+      "id": "shell",
+      "source": "plugins/dsh-android-bridge/src/shell-ops.ts",
+      "symbol": "SHELL_OPS",
+      "neverA11y": true,
+      "faces": [
+        "handle",
+        "SUPPORTED_OPS",
+        "ControlOp"
+      ],
+      "neverFaces": [
+        "A11Y_OPS",
+        "ROUTE_OPS",
+        "manage"
+      ],
+      "ops": [
+        "shExec",
+        "shPull",
+        "shPush",
+        "shRemove"
+      ],
+      "reason": "0.14.0 §6 特权 shell 通道（替换退役的内置 adb）：壳侧 ControlCarrier + Shizuku UserService 承载，不经无障碍通道；引擎侧入口仍是 execAdbShell/execAdbLine（内部 translateAdbLine 翻译成 exec/pull/push 步骤，无 adb 字符串透传）。ROUTE_OPS 本批不落（诊断面列 neverA11y op 会播错误指引）。",
       "owner": {
         "engine": "dev-gates / dev-incoming（ControlOp 联合；A11Y_OPS/ROUTE_OPS 不列）",
         "shell": "dev-shell2（DeviceControlService.handle + ControlProtocolV2.SUPPORTED_OPS）"

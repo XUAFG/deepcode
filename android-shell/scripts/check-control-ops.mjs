@@ -136,6 +136,19 @@ const routeBlock = arrayBlock(bridge, 'const ROUTE_OPS', '= [', ']')
 if (routeBlock === null) failParse('index.ts 的 ROUTE_OPS')
 const routeOps = new Set(quoted(routeBlock))
 
+// 6b) 壳侧 ControlCarrier 的 neverA11y 直连路由集合（0.14.0 设备实锤补线）
+// 这一面此前**完全没被门禁覆盖**，后果不是「拒绝服务」而是**误导性错误**：
+// browserTabs（= browser_list_tabs）漏登记时，op 落进 a11y 分支，模型收到「需要无障碍服务支持」
+// ——它与无障碍毫无关系，于是模型去开无障碍。同类漏登记必须由门禁挡住。
+const carrier = readOrDie(join(SHELL_ROOT, 'app', 'src', 'main', 'java', 'com', 'dsharnessmobile', 'shell', 'ControlCarrier.kt'))
+const carrierOps = new Set()
+for (const symbol of ['BROWSER_OPS', 'VD_OPS', 'SHELL_OPS']) {
+  const block = arrayBlock(carrier, 'val ' + symbol, 'setOf(', ')')
+  if (block === null) failParse('ControlCarrier.' + symbol)
+  for (const op of quoted(block)) carrierOps.add(op)
+}
+if (carrierOps.size === 0) failParse('ControlCarrier 的 neverA11y 路由集合')
+
 // 6) manage 工具面（实参集合；支持 a11yExec(<ident>) 的 const 三目解析）
 const manage = readOrDie(join(PLUGIN_ROOT, 'plugins', 'dsh-android-manage', 'src', 'index.ts'))
 const manageOps = new Set([...manage.matchAll(/(?:a11yExec|controlExec)\(\s*'([A-Za-z]+)'/g)].map((m) => m[1]))
@@ -149,6 +162,7 @@ const show = (n, s) => console.log('  ' + n.padEnd(16) + ' [' + [...s].sort().jo
 console.log('六处登记面：')
 show('handle', shellHandle)
 show('SUPPORTED_OPS', shellSupported)
+show('ControlCarrier', carrierOps)
 show('ControlOp', engineOps)
 show('A11Y_OPS', a11yOps)
 show('ROUTE_OPS', routeOps)
@@ -156,16 +170,25 @@ show('manage 工具面', manageOps)
 
 // 族归属（D 项按族校验工具面 owner；Lead 裁决 2026-09-12）：browser*/vd* 的工具由各自插件注册，
 // manage 不承载它们——但主体仍必须与 handle/SUPPORTED_OPS 一致（A/B/C 项不变）。
-// 台账读取对并发窗口降级：本文件与门禁常在同批提交，秒级窗口内可能读到半写状态（dev-notify 实测同一源码
-// 两次跑出相反结果）。缺 families / 缺 pending / 整体不可解析一律 WARN 并按空处理，不判红。
+// review §2.3（2026-09-14）：旧实现把「台账缺失」降级 WARN 不判红——一次并批提交的秒级并发窗口
+// 就足以让 D 项整段失效，属假绿。现改为：短重试（3 × 150ms）消化并发窗口；仍缺段/不可解析即 FAIL。
 const PENDING_PATH = join(ROOT, 'scripts', 'control-ops-pending.json')
-let ledger = {}
-if (existsSync(PENDING_PATH)) {
-  try { ledger = JSON.parse(readFileSync(PENDING_PATH, 'utf8')) } catch { ledger = {} }
+let ledger = null
+let ledgerError = null
+for (let attempt = 0; attempt < 3 && ledger === null; attempt += 1) {
+  try {
+    const parsed = JSON.parse(readFileSync(PENDING_PATH, 'utf8'))
+    if (parsed.families !== undefined && parsed.pending !== undefined) ledger = parsed
+    else ledgerError = '缺段（families=' + (parsed.families === undefined ? '缺' : '在场')
+      + ' / pending=' + (parsed.pending === undefined ? '缺' : '在场') + '）'
+  } catch (e) {
+    ledgerError = String(e).slice(0, 160)
+  }
+  if (ledger === null && attempt < 2) await new Promise((resolve) => setTimeout(resolve, 150))
 }
-if (ledger.families === undefined || ledger.pending === undefined) {
-  console.log('WARN  控制 op 台账缺段（families=' + (ledger.families === undefined ? '缺' : '在场')
-    + ' / pending=' + (ledger.pending === undefined ? '缺' : '在场') + '）：按空处理，族级校验降级（并发窗口，恢复后复核）')
+if (ledger === null) {
+  check('控制 op 台账可解析且含 families/pending 段（' + rel(PENDING_PATH) + '）', false, ledgerError ?? '不可解析')
+  ledger = {}
 }
 const pendingFamilies = ledger.families ?? []
 const familyOps = new Set(pendingFamilies.flatMap((fam) => fam.ops ?? []))
@@ -184,16 +207,16 @@ setEq('ControlOp == SUPPORTED_OPS', engineOps, shellSupported, 'ControlOp', 'SUP
 setEq('A11Y_OPS == ControlOp', a11yOps, engineOps, 'A11Y_OPS', 'ControlOp', 'A11Y_OPS')
 const manageOnly = diff(withoutFamily(manageOps), withoutFamily(shellSupported)).filter((op) => !exempt(op, 'manage'))
 const supportedOnly = diff(withoutFamily(shellSupported), withoutFamily(manageOps)).filter((op) => !exempt(op, 'manage'))
-if (manageOnly.length === 0 && supportedOnly.length === 0) {
-  check('manage 工具面 == SUPPORTED_OPS（族外 op）', true)
-} else if (pendingFamilies.length === 0) {
-  warnings.push('D 项降级：台账缺 families 段（并发窗口），差集未判红')
-  console.log('WARN  D 项降级：台账缺 families 段（并发窗口）→ manage 独有=[' + manageOnly.join(', ')
-    + ']；SUPPORTED_OPS 独有=[' + supportedOnly.join(', ') + ']，不判红（台账恢复后复核）')
-} else {
-  check('manage 工具面 == SUPPORTED_OPS（族外 op）', false,
-    'manage 独有=[' + manageOnly.join(', ') + ']；SUPPORTED_OPS 独有=[' + supportedOnly.join(', ') + ']')
-}
+// review §2.3：台账在场（哪怕 families=[]）差集非空一律判红；不再有「缺段降级 WARN」分支。
+check('manage 工具面 == SUPPORTED_OPS（族外 op）', manageOnly.length === 0 && supportedOnly.length === 0,
+  'manage 独有=[' + manageOnly.join(', ') + ']；SUPPORTED_OPS 独有=[' + supportedOnly.join(', ') + ']')
+
+// D2. ControlCarrier 的 neverA11y 路由集合 ⊇ 契约全部 neverA11y op（0.14.0 补线）
+// 缺一条 = 该 op 落进 a11y 分支报**误导性错误**（实测 browserTabs 让模型去开无障碍）。
+// 只查「契约里的 neverA11y op 是否都被路由」，不要求反向相等：集合里多写的 op 无害（仍进同一分支）。
+const carrierMissing = [...familyOps].filter((op) => !carrierOps.has(op) && !exempt(op, 'handle')).sort()
+check('ControlCarrier 路由 ⊇ 契约 neverA11y op（漏登记即报误导性错误）', carrierMissing.length === 0,
+  '未登记: [' + carrierMissing.join(', ') + ']（会落进 a11y 分支并返回「需要无障碍」）')
 
 // E. ROUTE_OPS 声明为子集（诊断面只列常用 op）
 const routeOut = diff(routeOps, engineOps).filter((op) => !exempt(op, 'ROUTE_OPS'))

@@ -11,9 +11,56 @@
 //
 // 注意（2026-08-26 实锤）：wsl.exe 的 localhost 代理会把 "already-ok/up-to-date" 噪音写进
 // stdout。凡要「原始字节/精确内容」的调用不要依赖 sh() 的 stdout，改为写文件再读（见 elf-check.mjs）。
+import { existsSync } from 'node:fs'
 import { execFileSync, execSync } from 'node:child_process'
 
 export const IS_WSL_HOST = process.platform === 'win32'
+
+/**
+ * tar 可执行文件的**显式定位**（0.14.1 W1 / 批 4 收口）。
+ *
+ * 真因（构建链实锤）：Windows 上 `tar` 常解析到 **Git 自带的 GNU tar**（本机 `Get-Command tar` =
+ * `C:\Program Files\Git\usr\bin\tar.exe`），它把 `-tf D:\...\snap.tar.xz` 里的 `D:` 当**远端主机名**
+ * 解析，报 `tar: Cannot connect to D: resolve failed`；而门禁把「归档不可读」当硬失败 ⇒ 整个
+ * `build-apk-013.ps1` 在注入完整性门禁处拒打包（**不是产物有问题，是调用到的工具不对**）。
+ * 同一形态已在 check-browser-syntax-floor 上出现过一次（当时只修了那一处，本轮收敛成单一真源）。
+ *
+ * win32 一律优先系统 bsdtar（绝对路径，能正确吃 Windows 路径），其余平台用 PATH 里的 tar。
+ * 两者都支持 `-t/-x/-xO` 与 `-T` 成员清单。
+ */
+export const resolveTar = () => {
+  if (process.platform === 'win32') {
+    for (const cand of [
+      'C:\\Windows\\System32\\tar.exe',
+      'C:\\Windows\\Sysnative\\tar.exe',
+    ]) {
+      if (existsSync(cand)) return cand
+    }
+  }
+  return 'tar'
+}
+
+/** 进程级常量（同一进程内只需解析一次）。 */
+export const TAR = resolveTar()
+
+/**
+ * 压缩类任务的**并发线程上限**（0.14.1 用户拍板的系统级约束）。
+ *
+ * 为什么固定为 8 而不是「全部核心 / -T0」：本开发机是 8 物理核 / 16 逻辑核。构建期把 xz/压缩
+ * 开到全部 16 个逻辑线程会把机器吃满，导致同时运行的 **MuMu 模拟器卡顿、甚至系统级不稳定**——
+ * 而模拟器实测（铁律 2「模拟器优先」）与构建常常并行发生，撑满等于自己踩自己的验收环境。
+ * 8 = 物理核数，既能吃到接近全部物理并行度（SMT 对 xz 这类内存带宽受限任务收益本就很小），
+ * 又给模拟器/系统留出余量。
+ *
+ * 用法：把原先的 `xz -T0` 换成 `xz -T${XZ_THREADS}`；其它并行工具同理。
+ * 覆盖：环境变量 `DSH_CPU_THREADS`（给 CI 或更强机器留出口，但仍建议不超过物理核）。
+ */
+export const CPU_THREADS_CAP = 8
+export const XZ_THREADS = (() => {
+  const raw = Number(process.env.DSH_CPU_THREADS)
+  if (Number.isFinite(raw) && raw >= 1) return Math.max(1, Math.floor(raw))
+  return CPU_THREADS_CAP
+})()
 
 let cachedDistro
 /**

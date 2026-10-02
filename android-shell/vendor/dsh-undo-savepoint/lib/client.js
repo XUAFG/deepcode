@@ -7,7 +7,7 @@ window.__ModuleLoader__.load({
 		let react = require("react");
 		let react_jsx_runtime = require("react/jsx-runtime");
 		//#region dsh-undo-savepoint styles
-		const css = ".u_actions{display:flex;align-items:center;gap:4px;padding:0 2px}.u_btn{cursor:pointer;border:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:8px;height:24px;padding:0 9px;font-size:12px;line-height:22px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap}.u_btn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15));color:var(--dsw-alias-label-primary, inherit)}.u_btn:disabled{opacity:.4;cursor:default}.u_undo{color:#e5484d;border-color:rgba(229,72,77,.45)}.u_undo:hover{background:rgba(229,72,77,.12);color:#e5484d}.u_redo{color:#30a46c;border-color:rgba(48,164,108,.45)}.u_redo:hover{background:rgba(48,164,108,.12);color:#30a46c}.u_list{color:var(--dsw-alias-label-secondary, inherit)}.u_list:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_msg{max-width:min(280px,40vw);font-size:12px;line-height:18px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 6px}.u_ok{color:var(--dsw-alias-label-tertiary, #888)}.u_err{color:var(--dsw-state-error-primary, #d9534f)}.u_overlay{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px 16px}.u_panel{width:min(860px,96vw);max-height:80vh;display:flex;flex-direction:column;background:var(--dsw-specific-panel, #fff);border:1px solid var(--dsw-alias-border-inverted, rgba(128,128,128,.4));border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);overflow:hidden}.u_head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex:none}.u_title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary, inherit);flex:1}.u_toolbar{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex-wrap:wrap;flex:none}.u_tbody{overflow-y:auto;padding:6px 14px 12px;flex:1}.u_table{width:100%;border-collapse:collapse;font-size:12px}.u_table th{text-align:left;color:var(--dsw-alias-label-tertiary, #888);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.2));white-space:nowrap}.u_table td{padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.12));vertical-align:middle}.u_time{white-space:nowrap;color:var(--dsw-alias-label-secondary, inherit)}.u_kind{white-space:nowrap}.u_reason{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary, inherit)}.u_loc{white-space:nowrap;font-size:11px;opacity:.8}.u_rowbtn{cursor:pointer;border:none;background:0 0;color:var(--dsw-alias-label-secondary, inherit);font-size:12px;padding:2px 6px;border-radius:6px}.u_rowbtn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_rowbtn.u_okc{color:#30a46c}.u_rowbtn.u_errc{color:#e5484d}.u_empty{color:var(--dsw-alias-label-tertiary, #888);text-align:center;padding:24px 0;font-size:13px}.u_foot{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex:none}.u_row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;padding:10px 16px;box-sizing:border-box}.u_pair{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.u_keyLabel{color:var(--dsw-alias-label-primary, inherit);font-size:13px;flex:none;min-width:96px}.u_browseBtn{cursor:pointer;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:6px;width:28px;height:28px;font-size:14px;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0}.u_browseBtn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_keyInput{width:110px;height:28px;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-alias-bg-base, transparent);color:var(--dsw-alias-label-primary, inherit);border-radius:6px;outline:none;padding:0 8px;font-size:12px;box-sizing:border-box}.u_keyInput:focus{border-color:var(--dsw-state-business-primary, #4a90d9)}.u_num{width:84px}.u_dir{width:280px}.u_hint{color:var(--dsw-alias-label-tertiary, #888);font-size:12px;flex:none}.u_save{cursor:pointer;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-primary, inherit);border-radius:8px;height:26px;padding:0 12px;font-size:12px}.u_save:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_close{cursor:pointer;border:none;background:0 0;color:var(--dsw-alias-label-tertiary, #888);font-size:18px;line-height:1;padding:2px 6px;border-radius:6px}.u_close:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_diffbox{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,92vw);max-height:70vh;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-inverted, rgba(128,128,128,.4));border-radius:12px;background:var(--dsw-specific-panel, #fff);box-shadow:0 12px 40px rgba(0,0,0,.4);z-index:20000;font-size:12px}.u_diffhead{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.2));flex:none}.u_diffbody{overflow-y:auto;padding:2px 0 8px;flex:1}.u_difffile{font-weight:600;padding:6px 10px 2px;color:var(--dsw-alias-label-primary, inherit)}.u_diffadd{color:#30a46c;padding:0 10px 0 22px;white-space:pre-wrap;word-break:break-all}.u_diffdel{color:#e5484d;padding:0 10px 0 22px;white-space:pre-wrap;word-break:break-all}";
+		const css = ".u_actions{display:flex;align-items:center;gap:4px;padding:0 2px}.u_btn{cursor:pointer;border:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:8px;height:24px;padding:0 9px;font-size:12px;line-height:22px;display:inline-flex;align-items:center;gap:3px;white-space:nowrap}.u_btn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15));color:var(--dsw-alias-label-primary, inherit)}.u_btn:disabled{opacity:.4;cursor:default}.u_undo{color:var(--dsw-alias-state-error-primary, #e5484d);border-color:rgba(229,72,77,.45)}.u_undo:hover{background:rgba(229,72,77,.12);color:var(--dsw-alias-state-error-primary, #e5484d)}.u_redo{color:var(--dsw-alias-state-success-primary, #30a46c);border-color:rgba(48,164,108,.45)}.u_redo:hover{background:rgba(48,164,108,.12);color:var(--dsw-alias-state-success-primary, #30a46c)}.u_list{color:var(--dsw-alias-label-secondary, inherit)}.u_list:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_msg{max-width:min(280px,40vw);font-size:12px;line-height:18px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 6px}.u_ok{color:var(--dsw-alias-label-tertiary, #888)}.u_err{color:var(--dsw-alias-state-error-primary, #d9534f)}.u_overlay{position:fixed;inset:0;background:var(--dsw-alias-bg-mask-1, rgba(0,0,0,.35));z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:6vh 16px 16px}.u_panel{width:min(860px,96vw);max-height:80vh;display:flex;flex-direction:column;background:var(--dsw-alias-bg-layer-1, #fff);border:1px solid var(--dsw-alias-border-l3, rgba(128,128,128,.4));border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);overflow:hidden}.u_head{display:flex;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex:none}.u_title{font-size:14px;font-weight:600;color:var(--dsw-alias-label-primary, inherit);flex:1}.u_toolbar{display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex-wrap:wrap;flex:none}.u_tbody{overflow-y:auto;padding:6px 14px 12px;flex:1}.u_table{width:100%;border-collapse:collapse;font-size:12px}.u_table th{text-align:left;color:var(--dsw-alias-label-tertiary, #888);font-weight:500;padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.2));white-space:nowrap}.u_table td{padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.12));vertical-align:middle}.u_time{white-space:nowrap;color:var(--dsw-alias-label-secondary, inherit)}.u_kind{white-space:nowrap}.u_reason{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-secondary, inherit)}.u_loc{white-space:nowrap;font-size:11px;opacity:.8}.u_rowbtn{cursor:pointer;border:none;background:0 0;color:var(--dsw-alias-label-secondary, inherit);font-size:12px;padding:2px 6px;border-radius:6px}.u_rowbtn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_rowbtn.u_okc{color:var(--dsw-alias-state-success-primary, #30a46c)}.u_rowbtn.u_errc{color:var(--dsw-alias-state-error-primary, #e5484d)}.u_empty{color:var(--dsw-alias-label-tertiary, #888);text-align:center;padding:24px 0;font-size:13px}.u_foot{display:flex;align-items:center;gap:8px;padding:8px 14px;border-top:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.25));flex:none}.u_row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;padding:10px 16px;box-sizing:border-box}.u_pair{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.u_keyLabel{color:var(--dsw-alias-label-primary, inherit);font-size:13px;flex:none;min-width:96px}.u_browseBtn{cursor:pointer;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:6px;width:28px;height:28px;font-size:14px;line-height:1;display:inline-flex;align-items:center;justify-content:center;padding:0}.u_browseBtn:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_keyInput{width:110px;height:28px;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-alias-bg-base, transparent);color:var(--dsw-alias-label-primary, inherit);border-radius:6px;outline:none;padding:0 8px;font-size:12px;box-sizing:border-box}.u_keyInput:focus{border-color:var(--dsw-alias-state-business-primary, #4a90d9)}.u_num{width:84px}.u_dir{width:280px}.u_hint{color:var(--dsw-alias-label-tertiary, #888);font-size:12px;flex:none}.u_save{cursor:pointer;border:1px solid var(--dsw-alias-border-l2, rgba(128,128,128,.4));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-primary, inherit);border-radius:8px;height:26px;padding:0 12px;font-size:12px}.u_save:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_close{cursor:pointer;border:none;background:0 0;color:var(--dsw-alias-label-tertiary, #888);font-size:18px;line-height:1;padding:2px 6px;border-radius:6px}.u_close:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15))}.u_diffbox{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);width:min(720px,92vw);max-height:70vh;display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l3, rgba(128,128,128,.4));border-radius:12px;background:var(--dsw-alias-bg-layer-1, #fff);box-shadow:0 12px 40px rgba(0,0,0,.4);z-index:20000;font-size:12px}.u_diffhead{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.2));flex:none}.u_diffbody{overflow-y:auto;padding:2px 0 8px;flex:1}.u_difffile{font-weight:600;padding:6px 10px 2px;color:var(--dsw-alias-label-primary, inherit)}.u_diffadd{color:var(--dsw-alias-state-success-primary, #30a46c);padding:0 10px 0 22px;white-space:pre-wrap;word-break:break-all}.u_diffdel{color:var(--dsw-alias-state-error-primary, #e5484d);padding:0 10px 0 22px;white-space:pre-wrap;word-break:break-all}";
 		const tagId = "dsh-undo-savepoint/undo.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -17,7 +17,7 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		// v0.3.4 UI 增强补充样式:图标对齐 / 状态徽章 / 面板副标题
-		const css2 = ".u_icon{display:inline-block;vertical-align:-2px;flex:none;line-height:0}.u_badge{cursor:pointer;border:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:999px;height:20px;padding:0 8px;font-size:11px;line-height:18px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;max-width:30vw;overflow:hidden;text-overflow:ellipsis}.u_badge:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15));color:var(--dsw-alias-label-primary, inherit)}.u_dot{width:6px;height:6px;border-radius:50%;background:#30a46c;flex:none}.u_subtitle{font-size:11px;color:var(--dsw-alias-label-tertiary, #888);font-weight:400;white-space:nowrap;max-width:min(220px,30vw);text-overflow:ellipsis;overflow:hidden}.u_badge{padding:0;width:20px;height:20px;justify-content:center;gap:0}";
+		const css2 = ".u_icon{display:inline-block;vertical-align:-2px;flex:none;line-height:0}.u_badge{cursor:pointer;border:1px solid var(--dsw-alias-border-l1, rgba(128,128,128,.35));background:var(--dsw-specific-tip, transparent);color:var(--dsw-alias-label-secondary, inherit);border-radius:999px;height:20px;padding:0 8px;font-size:11px;line-height:18px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;flex:none;max-width:30vw;overflow:hidden;text-overflow:ellipsis}.u_badge:hover{background:var(--dsw-alias-interactive-bg-hover, rgba(128,128,128,.15));color:var(--dsw-alias-label-primary, inherit)}.u_dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-state-success-primary, #30a46c);flex:none}.u_subtitle{font-size:11px;color:var(--dsw-alias-label-tertiary, #888);font-weight:400;white-space:nowrap;max-width:min(220px,30vw);text-overflow:ellipsis;overflow:hidden}.u_badge{padding:0;width:20px;height:20px;justify-content:center;gap:0}";
 		const tagId2 = "dsh-undo-savepoint/undo.enhance.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId2) + "]") === null) {
 			const tag = document.createElement("style");
@@ -118,6 +118,8 @@ window.__ModuleLoader__.load({
 			"settings.keep": "自动档保留数量",
 			"settings.manualDir": "手动快照目录",
 			"settings.autoDir": "自动快照目录",
+			"settings.desktop": "桌面快捷方式",
+			"settings.desktopInfo": "桌面目录",
 			"settings.sensitive": "敏感模式",
 			"settings.sensitive.redact": "脱敏(默认,值替换为***REDACTED***,本机回滚完整)",
 			"settings.sensitive.keep": "明文(兼容旧行为,快照含真实值)",
@@ -125,7 +127,27 @@ window.__ModuleLoader__.load({
 			"settings.save": "保存设置",
 			"settings.browse": "浏览并选择目录…",
 			"settings.saved": "设置已保存并即时生效",
-			"settings.error": "保存失败:{msg}"
+			"settings.error": "保存失败:{msg}",
+			"export.pass": "导出/导入密码(可选,加密)",
+			"export.encrypted": "已加密",
+			"settings.schedule": "定时快照",
+			"settings.schedule.enabled": "启用定时快照",
+			"settings.schedule.ms": "间隔(分钟,≥1)",
+			"settings.schedule.hint": "定时自动建档,间隔 ≥1 分钟;关闭则仅配置变更时自动存档",
+			"settings.workspaceDirs": "跟踪工作区目录",
+			"settings.workspaceDirs.hint": "逗号/分号分隔可多选;非空时覆盖默认工作目录(当前目录不再自动包含);留空=仅当前工作目录",
+			"msg": "对话撤回",
+			"msg.aria": "打开对话级撤回面板",
+			"msg.title": "对话级撤回",
+			"msg.empty": "暂无可撤回的消息批次",
+			"msg.col.time": "时间",
+			"msg.col.files": "文件",
+			"msg.col.tools": "工具",
+			"msg.col.ops": "操作",
+			"msg.op.undo": "撤回",
+			"msg.op.undoClick": "撤回该消息批次的文件改动?",
+			"msg.ok": "已撤回该批次",
+			"msg.err": "撤回失败:{msg}"
 		};
 		const en = {
 			"undo": "Undo",
@@ -206,6 +228,8 @@ window.__ModuleLoader__.load({
 			"settings.keep": "Auto snapshots kept",
 			"settings.manualDir": "Manual snapshot dir",
 			"settings.autoDir": "Auto snapshot dir",
+			"settings.desktop": "Desktop shortcut",
+			"settings.desktopInfo": "Desktop dir",
 			"settings.sensitive": "Sensitive mode",
 			"settings.sensitive.redact": "Redact (default: values become ***REDACTED***, local rollback restores fully)",
 			"settings.sensitive.keep": "Plaintext (legacy: snapshots hold real values)",
@@ -213,7 +237,27 @@ window.__ModuleLoader__.load({
 			"settings.save": "Save settings",
 			"settings.browse": "Browse for directory…",
 			"settings.saved": "Settings saved and applied",
-			"settings.error": "Save failed: {msg}"
+			"settings.error": "Save failed: {msg}",
+			"export.pass": "Export/import password (optional, encrypts)",
+			"export.encrypted": "encrypted",
+			"settings.schedule": "Scheduled snapshots",
+			"settings.schedule.enabled": "Enable scheduled snapshots",
+			"settings.schedule.ms": "Interval (min, ≥1)",
+			"settings.schedule.hint": "Auto-snapshot on a timer, interval ≥1 min; disabled means only config changes auto-snapshot",
+			"settings.workspaceDirs": "Tracked workspace dirs",
+			"settings.workspaceDirs.hint": "Comma/semicolon separated (multi-select); when non-empty it REPLACES the default current-dir scope; leave empty = current dir only",
+			"msg": "Message undo",
+			"msg.aria": "Open message-level undo panel",
+			"msg.title": "Message-level undo",
+			"msg.empty": "No message batches to undo",
+			"msg.col.time": "Time",
+			"msg.col.files": "Files",
+			"msg.col.tools": "Tools",
+			"msg.col.ops": "Actions",
+			"msg.op.undo": "Undo",
+			"msg.op.undoClick": "Undo this batch's file changes?",
+			"msg.ok": "Batch undone",
+			"msg.err": "Undo failed: {msg}"
 		};
 		//#endregion
 		//#region keyboard config (localStorage; shared with the settings row)
@@ -324,6 +368,7 @@ window.__ModuleLoader__.load({
 			const [busy, setBusy] = (0, react.useState)(false);
 			const [msg, setMsg] = (0, react.useState)(null);
 			const [msgOk, setMsgOk] = (0, react.useState)(true);
+			const [msgOpen, setMsgOpen] = (0, react.useState)(false);
 			const timer = (0, react.useRef)(null);
 			const keys = loadKeys();
 			// 状态徽章:总数(/api/undo/status)+ 最新快照时间(/api/undo/list 首条),30s 轮询
@@ -399,8 +444,66 @@ window.__ModuleLoader__.load({
 					msg !== null && (0, react_jsx_runtime.jsx)("span", {
 						className: styles.msg + " " + (msgOk ? styles.ok : styles.err),
 						children: msg
-					})
+					}),
+					msgOpen && (0, react_jsx_runtime.jsx)(MessagePanel, { onClose: () => setMsgOpen(false), t })
 				]
+			});
+		}
+		//#endregion
+
+		//#region MessagePanel
+		/** V0.4.0 局内对话级撤回：列出消息批次并支持一键撤回文件改动。 */
+		function MessagePanel({ onClose, t }) {
+			const [list, setList] = (0, react.useState)(null);
+			const [busy, setBusy] = (0, react.useState)(false);
+			const [msg, setMsg] = (0, react.useState)(null);
+			const [msgOk, setMsgOk] = (0, react.useState)(true);
+			const load = (0, react.useCallback)(async () => {
+				const r = await api("/api/undo/messages");
+				if (r && r.ok) setList(r.messages || []);
+			}, []);
+			(0, react.useEffect)(() => { load(); }, [load]);
+			const undo = async (item) => {
+				if (busy) return;
+				setBusy(true);
+				try {
+					const r = await api("/api/undo/message", "POST", { id: item.id });
+					if (r && r.ok) { setMsgOk(true); setMsg(t("msg.ok")); load(); publishResult(r, "message"); }
+					else { setMsgOk(false); setMsg(t("msg.err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" })); }
+				} finally { setBusy(false); }
+			};
+			const rows = (list || []).map((it) => (0, react_jsx_runtime.jsx)("tr", {
+				children: [
+					(0, react_jsx_runtime.jsx)("td", { className: styles.time, children: relativeTime(it.startedAt || it.id, t) }),
+					(0, react_jsx_runtime.jsx)("td", { children: it.files }),
+					(0, react_jsx_runtime.jsx)("td", { className: styles.reason, children: (it.tools || []).join(", ") }),
+					(0, react_jsx_runtime.jsx)("td", { className: styles.kind, children: (0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.btn + " " + styles.undo, disabled: busy, onClick: () => undo(it), children: t("msg.op.undo") }) })
+				]
+			}, it.id));
+			let content;
+			if (list === null) content = (0, react_jsx_runtime.jsx)("div", { className: styles.empty, children: t("busy") });
+			else if (list.length === 0) content = (0, react_jsx_runtime.jsx)("div", { className: styles.empty, children: t("msg.empty") });
+			else content = (0, react_jsx_runtime.jsx)("table", { className: styles.table, children: [
+				(0, react_jsx_runtime.jsx)("thead", { children: (0, react_jsx_runtime.jsx)("tr", { children: [
+					(0, react_jsx_runtime.jsx)("th", { children: t("msg.col.time") }),
+					(0, react_jsx_runtime.jsx)("th", { children: t("msg.col.files") }),
+					(0, react_jsx_runtime.jsx)("th", { children: t("msg.col.tools") }),
+					(0, react_jsx_runtime.jsx)("th", { children: t("msg.col.ops") })
+				] }) }),
+				(0, react_jsx_runtime.jsx)("tbody", { children: rows })
+			] });
+			return (0, react_jsx_runtime.jsx)("div", {
+				className: styles.overlay,
+				"data-undo-msg-panel": true,
+				onClick: (e) => { if (e.target === e.currentTarget) onClose(); },
+				children: (0, react_jsx_runtime.jsx)("div", { className: styles.panel, children: [
+					(0, react_jsx_runtime.jsx)("div", { className: styles.head, children: [
+						(0, react_jsx_runtime.jsx)("span", { className: styles.title, children: t("msg.title") }),
+						(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.close, onClick: onClose, children: "×" })
+					] }),
+					msg !== null && (0, react_jsx_runtime.jsx)("div", { className: styles.foot, children: (0, react_jsx_runtime.jsx)("span", { className: styles.msg + " " + (msgOk ? styles.ok : styles.err), children: msg }) }),
+					(0, react_jsx_runtime.jsx)("div", { className: styles.tbody, children: content })
+				] })
 			});
 		}
 		//#endregion
@@ -413,6 +516,7 @@ window.__ModuleLoader__.load({
 			const [msgOk, setMsgOk] = (0, react.useState)(true);
 			const [diff, setDiff] = (0, react.useState)(null); // {id, items} for the diff preview box
 			const [bootAlert, setBootAlert] = (0, react.useState)(null); // { lastGoodSnapshotId, crashReason } | null
+			const [pass, setPass] = (0, react.useState)(''); // 导出/导入加密密码(可选)
 			const load = (0, react.useCallback)(async () => {
 				const r = await api("/api/undo/list");
 				setSnaps(r && r.ok ? (r.snapshots || []) : []);
@@ -480,15 +584,16 @@ window.__ModuleLoader__.load({
 				await load();
 			};
 			const exportNow = async () => {
-				const r = await api("/api/undo/export", "POST");
+				const r = await api("/api/undo/export", "POST", { password: pass });
 				setMsgOk(!!(r && r.ok));
 				if (r && r.ok && r.sensitiveWarning) window.alert(t("export.sensitive.warn"));
-				setMsg(r && r.ok ? t("ok.export", { n: r.count || 0, path: r.path || "" }) : t("err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" }));
+				const enc = r && r.ok && r.encrypted ? " · " + t("export.encrypted") : "";
+				setMsg(r && r.ok ? t("ok.export", { n: r.count || 0, path: r.path || "" }) + enc : t("err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" }));
 			};
 			const importNow = async () => {
 				const picked = await api("/api/undo/pick-file", "POST", {});
 				if (!(picked && picked.ok && picked.path)) return;
-				const r = await api("/api/undo/import", "POST", { path: picked.path });
+				const r = await api("/api/undo/import", "POST", { path: picked.path, password: pass });
 				setMsgOk(!!(r && r.ok));
 				setMsg(r && r.ok ? t("ok.import", { n: r.imported || 0, s: r.skipped || 0 }) : t("err", { msg: (r && (r.error && (r.error.message || r.error))) || "unknown" }));
 				await load();
@@ -524,6 +629,7 @@ window.__ModuleLoader__.load({
 								(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.btn, disabled: busy, onClick: cleanupNow, children: t("panel.cleanup") }),
 								(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.btn, disabled: busy, onClick: exportNow, children: t("panel.export") }),
 								(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.btn, disabled: busy, onClick: importNow, children: t("panel.import") }),
+								(0, react_jsx_runtime.jsx)("input", { type: "password", className: styles.keyInput, style: { width: 140 }, placeholder: t("export.pass"), value: pass, onChange: (e) => setPass(e.target.value), "aria-label": t("export.pass"), title: t("export.pass"), "data-undo-key-input": "1" }),
 								(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.btn, disabled: busy, onClick: toggleSafeMode, children: t("safe.mode") })
 							]
 						}),
@@ -703,6 +809,31 @@ window.__ModuleLoader__.load({
 							(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.browseBtn, title: t("settings.browse"), "aria-label": t("settings.browse"), onClick: () => pickDir("autoDir"), children: "📁" })
 						] }),
 						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
+							(0, react_jsx_runtime.jsx)("label", { className: styles.keyLabel, children: [
+								(0, react_jsx_runtime.jsx)("input", { type: "checkbox", checked: s.createDesktopShortcut !== false, onChange: (e) => set("createDesktopShortcut", e.target.checked), "data-undo-key-input": "1" }),
+								" " + t("settings.desktop")
+							] })
+						] }),
+						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
+							(0, react_jsx_runtime.jsx)("span", { className: styles.hint, children: t("settings.desktopInfo") + ": " + (s.desktopDir || "") })
+						] }),
+						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
+							(0, react_jsx_runtime.jsx)("label", { className: styles.keyLabel, children: [
+								(0, react_jsx_runtime.jsx)("input", { type: "checkbox", checked: !!s.scheduledSnapshotEnabled, onChange: (e) => set("scheduledSnapshotEnabled", e.target.checked), "data-undo-key-input": "1" }),
+								" " + t("settings.schedule.enabled")
+							] })
+						] }),
+						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
+							(0, react_jsx_runtime.jsx)("span", { className: styles.keyLabel, children: t("settings.schedule.ms") }),
+							(0, react_jsx_runtime.jsx)("input", { type: "number", className: styles.keyInput + " " + styles.num, min: 1, value: Math.round((s.scheduledSnapshotMs || 0) / 60000), onChange: (e) => set("scheduledSnapshotMs", Math.max(1, Math.round(Number(e.target.value) || 0)) * 60000), "data-undo-key-input": "1" }),
+							(0, react_jsx_runtime.jsx)("span", { className: styles.hint, children: t("settings.schedule.hint") })
+						] }),
+						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
+							(0, react_jsx_runtime.jsx)("span", { className: styles.keyLabel, children: t("settings.workspaceDirs") }),
+							(0, react_jsx_runtime.jsx)("input", { type: "text", className: styles.keyInput + " " + styles.dir, value: (Array.isArray(s.workspaceDirs) ? s.workspaceDirs.join(", ") : ""), onChange: (e) => set("workspaceDirs", e.target.value), "data-undo-key-input": "1" }),
+							(0, react_jsx_runtime.jsx)("span", { className: styles.hint, children: t("settings.workspaceDirs.hint") })
+						] }),
+						(0, react_jsx_runtime.jsx)("div", { className: styles.pair, children: [
 							(0, react_jsx_runtime.jsx)("button", { type: "button", className: styles.save, onClick: save, children: t("settings.save") }),
 							msg !== null && (0, react_jsx_runtime.jsx)("span", { className: styles.msg + " " + (msgOk ? styles.ok : styles.err), children: msg })
 						] })
@@ -719,7 +850,7 @@ window.__ModuleLoader__.load({
 		}
 		//#endregion
 		//#region client entry
-		const inject = ["slots", "locale"];
+		const inject = ["locale", "slots"];
 		function apply(ctx) {
 			// rc8 兼容盖子（2026-08-20）：客户端服务调用逐项 try/catch 降级，
 			// 单项失败只 console.warn 跳过，不拖垮整个 client（WebUI 半区保命）。

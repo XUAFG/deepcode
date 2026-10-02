@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>dsh 控制台</title>
+<title>DeepCode 控制台</title>
 <style>
   :root {
     --ds-bg: #080A09;
@@ -217,6 +217,8 @@
   #send:active { background: var(--ds-accent-pressed); transform: scale(0.96); }
   #send:disabled { opacity: 0.4; }
   #wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #engineHint { padding: 6px 10px; font-size: 12px; line-height: 1.4; color: var(--fg-dim, #9aa0a6); }
+  #enginePill[role=button] { cursor: pointer; }
 </style>
 </head>
 <body>
@@ -224,7 +226,7 @@
     <div id="statusbar">
       <button id="close" type="button">关闭</button>
       <span class="title">控制台</span>
-      <span class="pill grow"><span class="dot" id="engineDot"></span><span id="engineStatus">引擎检测中…</span></span>
+      <span class="pill grow" id="enginePill" role="button" title="点此立即重新检测引擎"><span class="dot" id="engineDot"></span><span id="engineStatus">引擎检测中…</span></span>
     </div>
     <div id="tools">
       <span class="pill"><span class="dot" id="bashDot"></span><span id="consoleStatus">启动中…</span></span>
@@ -233,6 +235,7 @@
       <button class="ghost" id="clearBtn" type="button">清空</button>
       <button class="ghost" id="restartBtn" type="button">重连</button>
     </div>
+    <div id="engineHint" style="display:none"></div>
   </div>
   <div id="wrap">
     <div id="output"><span class="muted">快照内嵌 Termux bash。引擎未运行时也可排查启动失败。</span><br><br></div>
@@ -309,25 +312,54 @@
     if (stickBottom) scrollBottom();
   };
 
-  function setReady(on, text) {
+  /**
+   * 控制台状态由**壳侧显式给出**（S1-18）。
+   *
+   * 旧实现（本函数的前身 `__consoleStatus`）从文案里做子串正则判就绪：
+   *   if (/已启动/.test(t)) ready; else if (/退出|失败|缺失/.test(t)) not-ready;
+   * ——只要措辞改动一次（「bash 已启动」→「控制台已就绪」之类），判据就**静默错判**：
+   * 页面永远停在「启动中」、输入框永久禁用，而壳侧一切正常。这类「判据挂在文案上」的
+   * 结构性问题在审查档 §3.1 记为 S1-18。现在状态是**枚举**，文案只用于显示。
+   */
+  var missingState = false;
+
+  function setReady(on, text, state) {
     ready = !!on;
+    // missing = 快照里的 bash 不存在：再点「重连」必然同样失败（S1-16），故换成「返回应用」。
+    missingState = (state === 'missing');
     cmd.disabled = !ready;
     send.disabled = !ready;
     bashDot.className = 'dot ' + (ready ? 'ok pulse' : 'err');
     if (text) consoleStatus.textContent = text;
+    restartBtn.textContent = missingState ? '返回应用' : '重连';
+    restartBtn.dataset.mode = missingState ? 'close' : 'restart';
+    restartBtn.title = missingState ? '快照缺失，重连不会有变化；返回应用可重试启动' : '重新拉起 bash';
+    if (missingState) {
+      // 死路必须在页面上说清「为什么重连没用 + 怎么办」，而不是留一个必然失败的唯一按钮。
+      setEngineHint('快照缺失：控制台依赖运行时里的 bash。请返回应用重试启动（会自动重建运行时）；仍失败则重装应用。');
+    }
   }
 
-  window.__consoleStatus = function (text) {
+  window.__consoleState = function (state, text) {
     var t = text || '';
     consoleStatus.textContent = t;
-    if (/已启动/.test(t)) setReady(true, t);
-    else if (/退出|失败|缺失/.test(t)) setReady(false, t);
+    if (state === 'ready') setReady(true, t, state);
+    else if (state === 'starting') setReady(false, t, state);
+    else setReady(false, t, state);   // failed / exited / missing
   };
 
   window.__consoleInsets = function (top, bottom, ime) {
     document.documentElement.style.setProperty('--inset-top', (top || 0) + 'px');
     document.documentElement.style.setProperty('--inset-bottom', Math.max(bottom || 0, ime || 0) + 'px');
   };
+
+  /** 引擎栏下方的说明行（S1-17：只报状态不给动作，等于让用户自己猜下一步）。 */
+  function setEngineHint(text) {
+    var el = document.getElementById('engineHint');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? 'block' : 'none';
+  }
 
   function refreshEngine() {
     try {
@@ -336,13 +368,18 @@
       if (info && info.running) {
         engineStatus.textContent = '引擎 ' + info.latencyMs + 'ms';
         engineDot.className = 'dot ok';
+        setEngineHint('');
       } else {
-        engineStatus.textContent = '引擎离线';
+        // S1-17：离线时给**动作**，不只给状态：这一行本身可点（立即重试探活），
+        // 并在下面写清两条真实出路。
+        engineStatus.textContent = '引擎离线（点此重试）';
         engineDot.className = 'dot err';
+        setEngineHint('引擎未运行：可回到应用启动引擎（或看 engine.log 排查）。控制台本身不依赖引擎，仍可用。');
       }
     } catch (e) {
-      engineStatus.textContent = '引擎检测失败';
+      engineStatus.textContent = '引擎检测失败（点此重试）';
       engineDot.className = 'dot err';
+      setEngineHint('无法读取引擎状态（桥不可用）。控制台本身不依赖引擎，仍可用。');
     }
   }
 
@@ -414,9 +451,17 @@
     } catch (e) {}
   });
   document.getElementById('restartBtn').addEventListener('click', function () {
+    // S1-16：快照缺失时这个按钮的语义是「返回应用」，不是「重连」——重连必然同样失败
+    // （bash 根本不存在），旧实现把用户锁在一个只有死按钮的页面上。
+    if (this.dataset.mode === 'close') {
+      try { window.consoleBridge.close(); } catch (e) {}
+      return;
+    }
     setReady(false, '正在重连…');
     try { window.consoleBridge.restart(); } catch (e) {}
   });
+  // S1-17：引擎栏可点 = 立即重试探活（离线时不再只是「报个状态」，而是给一个动作）。
+  document.getElementById('enginePill').addEventListener('click', function () { refreshEngine(); });
   document.querySelectorAll('.chip').forEach(function (el) {
     el.addEventListener('click', function () {
       cmd.value = el.getAttribute('data-cmd') || '';

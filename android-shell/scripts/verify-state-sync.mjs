@@ -84,14 +84,17 @@ export function makeCdp(getWsUrl) {
 /**
  * 壳偏好 upsert 命令（单字符串 → 由 adb 交给设备 shell，避免嵌套引号被二次解析）：
  * 键在场则改值；键缺席则先在 </map> 前插入该键再改值（本轮实测 immersive_mode 在场、dev_log_enabled 缺席）。
- * 路径 = 应用数据根下的 shared_prefs/dsh_settings.xml（ShellState.PREFS="dsh_settings"）。
+ * 文件缺席（该设备从未用过对应开关，例如横屏机的 dsh_prefs.xml）时先落一个合法空 `<map>` 骨架再 upsert——
+ * 与 SharedPreferences 自身写出的结构同形，读侧 `getBoolean(key, false)` 语义不变。
+ * 路径 = 应用数据根下的 shared_prefs/<prefsName>.xml（ShellState.PREFS="dsh_settings"）。
  */
 export function prefsUpsertCommand(key, on, prefsName = 'dsh_settings') {
   const value = on ? 'true' : 'false'
   const file = 'shared_prefs/' + prefsName + '.xml'
+  const ensure = "[ -f " + file + " ] || { mkdir -p shared_prefs; printf '%s\\n' '<?xml version=\"1.0\" encoding=\"utf-8\" standalone=\"yes\" ?>' '<map>' '</map>' > " + file + " ; } ; "
   const esc = "(grep -q 'name=\"" + key + "\"' " + file + " || sed -i 's#</map>#    <boolean name=\"" + key + "\" value=\"false\" />\\n</map>#' " + file + ") && " +
     "sed -i 's#name=\"" + key + "\" value=\"[a-z]*\"#name=\"" + key + "\" value=\"" + value + "\"#' " + file
-  return 'run-as ' + PKG + ' sh -c "' + esc.replace(/"/g, '\\"') + '"'
+  return 'run-as ' + PKG + ' sh -c "' + (ensure + esc).replace(/"/g, '\\"') + '"'
 }
 
 /** 用例表：每条只动外部真源，再读我方 getter（展示值 + 判定值同源）。 */

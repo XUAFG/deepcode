@@ -11,9 +11,9 @@ import android.content.Context
  *
  * 零依赖反射化（2026-08-23）：Shizuku（Apache-2.0）仅作为 ADB 提权的说明性示例被
  * 部分引用——此处只用其公开静态 API（pingBinder/checkSelfPermission/getVersion）做
- * 探活日志，不参与本应用自写的 ADB 提权链路（AdbState/AndroidBridge.adbShell）。
- * 反射调用使 gradle 不再引入 dev.rikka.shizuku:api/aidl/provider/shared（约 57KB aar），
- * 体积归零；Shizuku 未安装/未运行时一律优雅降级。
+ * 探活日志，不参与授权链与 transport（0.14.0 起直连由 ShizukuTransport/ShizukuUserService
+ * 承担，gradle 已引 dev.rikka.shizuku:api/provider 13.1.5；本文件保留反射使探活在 aar
+ * 未装载时也能降级）；Shizuku 未安装/未运行时一律优雅降级。
  */
 object ShizukuSupport {
 

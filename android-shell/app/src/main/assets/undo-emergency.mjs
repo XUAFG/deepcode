@@ -8,7 +8,7 @@
 //   node dsh-undo-emergency.mjs restore <id|latest>         恢复到指定快照
 //   node dsh-undo-emergency.mjs restore-last-good           恢复 crash 归因得出的最后良好快照
 //   node dsh-undo-emergency.mjs undo                        撤销上一次自动快照（等价 restore auto-latest）
-//   node dsh-undo-emergency.mjs safe-mode on|off|status     安全模式：on=仅 dsh-undo 可启动的最小装配
+//   node dsh-undo-emergency.mjs safe-mode on|off|status     安全模式：on=摘除第三方条目、保留产品自有插件
 //   node dsh-undo-emergency.mjs boot-state                  显示插件崩溃归因状态（crashed/lastGoodAt/crashReason）
 //
 // 环境变量：DSH_HOME（默认 ~/.dsh）｜DSH_UNDO_ROOT（默认 $DSH_HOME/undo-snapshots）
@@ -209,13 +209,55 @@ function safeMode(action) {
     const homeExisted = existsSync(homePatch)
     if (homeExisted) copyFileSync(homePatch, homeBackup)
     if (!existsSync(backup)) { console.log('安全模式备份写入失败，拒绝进入'); return false }
-    const minimal = `# dsh-undo-savepoint SAFE MODE (entered ${new Date().toISOString()})\n# 除 dsh-undo-savepoint 外全部插件临时禁用。\n- insert:\n    - id: dsh-undo-savepoint\n      name: dsh-undo-savepoint\n`
+    // 与插件核心（core.mjs 的 undo-safe-align-S1）同口径：只摘第三方 insert 子条目，
+    // 保留我方装配的插件与全部顶层 disable 行。原实现整份覆写成最小文件，
+    // 会摘掉 12 个 @dsh-android/* 引用与 7 条 disabled（含安全关键的 client-hmr）。
+    const SHIPPED_PREFIXES = ['@deepseek-ai/', '@dsh-android/']
+    const SHIPPED_NAMES = ['dsh-undo-savepoint', 'dshmarketplace-plugin']
+    const isShipped = (name) => {
+      const v = String(name ?? '').trim().replace(/^['"]+|['"]+$/g, '')
+      if (v === '') return false
+      if (SHIPPED_NAMES.includes(v)) return true
+      return SHIPPED_PREFIXES.some((p) => v.startsWith(p))
+    }
+    const filterThirdPartyInserts = (text) => {
+      const lines = String(text).split('\n')
+      const out = []
+      let i = 0
+      while (i < lines.length) {
+        if (!/^- insert:\s*$/.test(lines[i])) { out.push(lines[i]); i += 1; continue }
+        let end = i + 1
+        while (end < lines.length && !/^-/.test(lines[end])) end += 1
+        const body = lines.slice(i + 1, end)
+        const firstItem = body.find((l) => /^(\s*)-\s+(id|name):/.test(l))
+        const itemIndent = firstItem ? firstItem.length - firstItem.replace(/^\s+/, '').length : null
+        if (itemIndent === null) { out.push(lines[i]); out.push(...body); i = end; continue }
+        const chunks = []
+        let cur = null
+        for (const line of body) {
+          const m = /^(\s*)-\s+/.exec(line)
+          if (m && m[1].length === itemIndent) { if (cur) chunks.push(cur); cur = [line] }
+          else if (cur) cur.push(line)
+        }
+        if (cur) chunks.push(cur)
+        const kept = []
+        for (const chunk of chunks) {
+          const nm = /^\s*-?\s*name:\s*['"]?([^'"\s]+)/m.exec(chunk.join('\n'))
+          if (nm && !isShipped(nm[1])) continue
+          kept.push(...chunk)
+        }
+        if (kept.length === 0) { i = end; continue }
+        out.push(lines[i]); out.push(...kept); i = end
+      }
+      return out.join('\n')
+    }
+    const minimal = filterThirdPartyInserts(existsSync(patch) ? readFileSync(patch, 'utf8') : '')
     mkdirSync(PROFILE_ROOT, { recursive: true })
     writeFileSync(patch, minimal)
     if (homeExisted) writeFileSync(homePatch, '# dsh-undo-savepoint SAFE MODE (home level)\n[]\n')
     writeFileSync(stateFile, JSON.stringify({ active: true, enteredAt: new Date().toISOString(), backup, homeBackup, snapshotId: id, homeExisted }, null, 2))
     rmSync(legacy, { force: true })
-    console.log(`安全模式 ON（建档 ${id}）。重启 DSH 将以最小插件装配启动。`)
+    console.log(`安全模式 ON（建档 ${id}）。已摘除第三方插件条目、保留产品自有插件；重启 DSH 生效。`)
     return true
   }
   if (action === 'off') {

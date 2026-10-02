@@ -1,207 +1,264 @@
-[Upstream project and community / 上游项目与社区](https://github.com/kelai141/dsh-mobile-apk)
-
-> 下游版本功能与构建边界见 [项目 README](../README.md)。以下保留上游使用说明供参考。
-
 # dsh-mobile-apk — DeepSeek Harness Android Shell APK
 
 [🌐 中文说明 / 中文 README](README.md)
 
+[![QQ群](https://img.shields.io/badge/QQ群-dsh--mobile用户群-12B7F5?logo=tencentqq)](https://qun.qq.com/universal-share/share?ac=1&authKey=C2NW5eWXsV%2FYu5DEkV9Ac%2FqYcXhGCY8C3Lga40KNCfE4AOjzlSeAaRGvWZqc3ADV&busi_data=eyJncm91cENvZGUiOiIxMTA5NDkzOTkyIiwidG9rZW4iOiJjTTRDM3pwNjRLTE8rbkZBVjRDbnFVWlBOdU04aGJaS3FaSG1xZWFXbm5ZNXphbEJBOXdGMGw2N0V3YnpabnhaIiwidWluIjoiMzc1NDY4MDE3NSJ9&data=NzUYIVyoUDsINSstug9aQ6Kf4EUx-hhDegPFaPS-1RD-p_4eE02WN773yEIujclrFYtWRDkLyDa-YDtWj2bKjg&svctype=4&tempid=h5_group_info)
 ![DeepSeek Harness](https://img.shields.io/badge/DeepSeek_Harness-blue?style=flat&logo=DeepSeek&logoSize=auto&color=%232D5F9E)
 ![Android](https://img.shields.io/badge/Android-blue?style=flat&logo=Android&logoSize=auto&color=%2397CA00)
 
-
-> **dsh-mobile 生态** · [dsh-shell-termux](https://github.com/kelai141/dsh-shell-termux)（shell）· [dsh-client-ui-responsive](https://github.com/kelai141/dsh-client-ui-responsive)（移动 UI）· [dsh-host-web-compat](https://github.com/kelai141/dsh-host-web-compat)（浏览器兼容）
-
-> **0.13.0 — official release**: the ADB real channel (pairing / port discovery / shell execution / authorization gates / audit) is fully implemented and device-verified.
-> - **Plugin-marketplace caveat**: the built-in marketplace covers many third-party plugins, and **most of them are likely unavailable or buggy on phones** (mobile vs desktop differ in WebView engine / filesystem / permission model / runtime). Mobile adaptation is long-term work — treat this beta as usability validation & feedback, not a production dependency. Report plugin issues to the [issue tracker](https://github.com/kelai141/dsh-mobile-apk/issues) with device model / version / reproduction steps.
+> **dsh-mobile ecosystem** · [dsh-shell-termux](https://github.com/kelai141/dsh-shell-termux) (shell) · [dsh-client-ui-responsive](https://github.com/kelai141/dsh-client-ui-responsive) (mobile UI) · [dsh-host-web-compat](https://github.com/kelai141/dsh-host-web-compat) (web compat) · [dsh-mobile](https://github.com/kelai141/dsh-mobile) (coordination repo, private)
 
 Android shell for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): WebView UI
 over an **embedded Termux runtime snapshot** (extract-and-run, no Termux app needed), SAF directory
 bridge, keep-alive foreground service, engine watchdog, and online runtime updates. One APK to
-install: it boots a full dsh web agent that can really execute bash. App name `DeepCode` (icon text
-DeepSearch), package `com.dsharnessmobile.shell`, version `0.13.0-fx-1` (versionCode 26).
+install: it boots a full dsh web agent that can really execute bash.
+
+App name `DeepCode` (icon text DeepSearch), package `com.dsharnessmobile.shell`,
+current version **`0.14.0-preview`** (versionCode 38), engine `@deepseek-ai/dsh` 0.1.5-rc.1.
+
+> **Plugin-marketplace caveat**: the built-in marketplace covers many third-party plugins, and
+> **most of them are likely unavailable or buggy on phones** (mobile vs desktop differ in WebView
+> engine / filesystem / permission model / runtime). Mobile adaptation is long-term work — treat this
+> beta as usability validation & feedback, not a production dependency.
+> Report plugin issues to the [issue tracker](https://github.com/kelai141/dsh-mobile-apk/issues)
+> with device model / version / reproduction steps.
 
 ## Features
 
-- **Embedded runtime** — xz snapshot (arm64 151.6 MB / x86_64 158.9 MB) bundling node + git + bash +
-  coreutils + dsh + plugins + pnpm + python/perl/ruby; first launch extracts in 2–4 min
-  (`refreshSnapshot`), engine listens on `127.0.0.1:3080`; fully offline.
-- **File-to-session (F5)** — "Open with / Share" auto-jumps into this app and forces a fresh temp
-  workspace session for the file; temp workspaces get a 7-day TTL auto-cleanup and appear in the
-  workspace panel (issue #60).
-- **Search (grep/glob)** — mobile ripgrep platform package (android-arm64, pcre2/NEON full-featured).
-- **Notifications** — automatic task-completion notifications (engine event bridge + watchdog
-  consumer); system notification chain incl. authorization requests.
-- **Mobile UI** — responsive plugin (drawer/sheet on phones); adjustable font size, immersive status
-  bar, dark theme.
-- **Built-in console** — standalone bash terminal (`assets/console.html` + embedded Termux), usable
-  for diagnostics even when the engine is down.
-- **Keep-alive** — foreground service + 5s watchdog (auto-restarts a hung engine) + 3s UI monitor
-  poll + crash auto-rollback gate (UndoGate).
-- **Online runtime updates** — manifest-driven snapshot swap (download → sha256 → atomic switch →
-  auto-restart); the running runtime can update itself without an APK update.
-- **APK self-update (0.13.8)** — the startup screen's "check for updates" button, manual only
-  (**never automatic**): queries the GitHub latest release, matches the asset for the device ABI and
-  downloads it through a mirror chain. When a newer version exists the **same button** turns into
-  "download and install vX.Y.Z" as a second confirmation; after the download the system
-  "install unknown apps" screen is opened on first use, then the system installer (signature
-  mismatch is rejected by the system; the app never installs anything silently).
-- **SAF bridge** — `pickDirectory` maps the picked tree to a real path (`/storage/emulated/0/…`).
-- **Device access** — All Files Access; Shizuku probe example.
-- **ADB real channel (0.13.0)** — real `adb pair` SPAKE2 handshake + NSD/mDNS port discovery,
-  shell execution via adbd (uid 2000) with danger-command blacklist, three-gate authorization
-  (All Files Access / in-app switch / pairing code) plus live session-mode gating, and native audit
-  (`files/audit/audit.ndjson`); connect-port rotation self-heals with a 5555 fallback.
+### Runtime and lifecycle
 
-## Download / Install
+- **Embedded runtime** — xz snapshot bundling node + git + bash + coreutils + dsh + plugins + pnpm +
+  python/perl/ruby; first launch extracts in 2–4 min (`refreshSnapshot`), engine listens on
+  `127.0.0.1:3080`; fully offline.
+- **Online runtime update** — manifest-driven snapshot replacement (download → sha256 → atomic swap →
+  restart), so the runtime self-updates without an APK update. The tree swap is **one transaction**:
+  extract to staging → verify completeness → swap wholesale; interruption rolls back, and user data
+  (sessions / attachments / settings / credentials / workspaces) is **never** touched.
+- **APK self-update** — the "Check for updates" button on the launch screen is the only trigger
+  (**never automatic**): queries the GitHub latest release, matches the asset by device ABI, and falls
+  back through a mirror chain. When a newer build exists the same button becomes
+  "Download and install vX.Y.Z" with a second confirmation.
+- **Keep-alive** — foreground service + 5s watchdog (relaunches a wedged engine) + 3s UI poll +
+  crash rollback gate (UndoGate).
+- **Built-in console** — a standalone interactive bash terminal (`assets/console.html`) that works
+  even when the engine is down.
 
-Release `v0.13.0-fx-1` ships two ABI variants (plus snapshot archives, plugin packages,
-MANIFEST checksums and release notes):
+### AI browser (isolated WebView workbench)
 
-| APK | Target |
+- A separate workbench in the right sidebar, backed by a **second WebView fully isolated** from the
+  main UI. The AI can open tabs and manage multiple pages at once; opening the sidebar lets a human
+  view several tabs simultaneously — **the UI is for humans, the AI reads pages through tools**.
+- **Resolution = CSS viewport** (document-start injection of `width=<cssW>` plus a letterboxed
+  physical rect), so `window.innerWidth` equals the requested value exactly; **PC / mobile identity**
+  is switchable (UA-CH capability gate; WebView 110 "degraded" is reported honestly).
+- The viewport **no longer collapses to 0x0** when the sidebar is collapsed (visibility uses
+  `INVISIBLE` rather than `GONE`, preserving layout, with a non-degenerate rect derived from the
+  last stage size).
+- `browser_snapshot` now renders a ref per line (previously only a count, leaving the model with no
+  clickable targets).
+- Scroll avoidance, Edge-style error page, close-to-destroy, and failure rendering with a real error.
+
+### Virtual display (run third-party apps on a separate screen)
+
+- Creates a virtual display through the **Shizuku privileged channel**, so third-party apps run on a
+  separate screen **without taking over the user's foreground**; single instance, max 1, with alias
+  reuse (`virtual-1` is always the fresh-screen number).
+- **The only workable cross-screen launch path**: the shell-side Shizuku UserService running
+  `am start --display <id> -n <component>` (fixed argv, component resolved first via
+  `cmd package resolve-activity`). The other three paths were measured and do not work
+  (`monkey --display` has no such option / shell `am start` is unreliable / in-process
+  `setLaunchDisplayId` is rejected by `SafeActivityOptions`).
+  Model-facing usage: `android_app_launch { pkg, screenId: "virtual-N" }`.
+- **Coordinate input** — absolute `x/y` plus `screenId` on a virtual display (injected through
+  `input -d <displayId>`, leaving the real screen untouched); normalized `nx/ny` is **explicitly
+  rejected** on virtual displays (an ambiguous denominator silently taps the real screen).
+- **Screenshot respects the target** — both `android_screenshot { screenId }` channels now land on
+  the target displayId and report that screen's own pixel dimensions as the resolution anchor
+  (previously the ADB fallback ignored `screenId` and captured the real screen).
+- Aspect-preserving fit (letterboxed and centered by content aspect ratio, never stretched),
+  10-minute idle reclaim, and a "phone control" settings section with force-destroy (triple-tap).
+
+### Phone control (accessibility + Shizuku, dual channel)
+
+- **Accessibility channel** — semantic tree / ref actions / virtual-display semantic tree.
+  **Shizuku privileged channel** — executes system commands as uid 2000 (`screencap` / `uiautomator` /
+  `dumpsys` / `input`, read-only and input classes only; system-configuration writes are always rejected).
+- **ref addressing** — node handles are retained at dump time so relocation never re-walks
+  `childPath`; the window id is pinned when the tree is built (focus changes no longer switch trees);
+  the UI cache TTL is 10 minutes.
+- **screenId triple** — `screenId` / `displayId` / `scope` are backfilled per entry, and `guard()`
+  resolves aliases asynchronously (a virtual-display alias to a dynamic displayId must ask the
+  shell-side registry; the synchronous surface cannot do it).
+- **"Phone control" settings section** — Shizuku status and guidance, screen scope, virtual-display
+  scale, floating-window toggle, accessibility entry, force destroy.
+
+### Attachments and files
+
+- **Paperclip pop-up menu** (DSH-native visuals): the paperclip shows "Upload attachment / Upload
+  image", and it opens on a **single tap** (no more double-tap). The two rows go to the **system file
+  picker** and the **system photo gallery** respectively (an explicit image type routes to
+  `PickMultipleVisualMedia`, the system photo picker on API 33+).
+- **File-to-session** — "Open with / Share" auto-jumps into this app and forces a fresh temp workspace
+  session for the file; temp workspaces get a 7-day TTL auto-cleanup.
+- **SAF bridge** — `pickDirectory` maps the chosen directory to a real path.
+
+## Download / install
+
+Releases provide both ABI packages (plus snapshot archives, plugin packages, a MANIFEST checklist and
+release notes):
+
+| APK | Applies to |
 |---|---|
-| `dsh-mobile-apk-v0.13.0-fx-1-arm64.apk` | arm64 devices (real phones) |
-| `dsh-mobile-apk-v0.13.0-fx-1-x86_64.apk` | x86_64 emulators / devices |
+| `dsh-mobile-apk-v<version>-arm64.apk` | arm64 devices (real hardware) |
+| `dsh-mobile-apk-v<version>-x86_64.apk` | x86_64 emulators / devices |
 
 ```sh
-adb install -r -t <apk>    # same-signature overwrite install
+adb install -r -t <apk>    # in-place upgrade, same signature
 ```
 
-**ABI must match the device.** A mismatched snapshot crashes the engine at startup — node ELF
-`EM_X86_64` vs `EM_AARCH64`. Pick arm64 for real phones, x86_64 for emulators.
+**The ABI must match the device.** A mismatch crashes the engine on start — node ELF `EM_X86_64` vs
+`EM_AARCH64`. Use the arm64 package on real hardware and x86_64 on emulators.
+
+> **After an in-place upgrade, wait for the first extraction to finish** (snapshot fingerprint flip),
+> and do not force-kill the app while it runs.
 
 ## Build
 
-Snapshot build & packaging live in the coordination repo
-([dsh-mobile](https://github.com/kelai141/dsh-mobile)); this repo is the shell. Requirements:
-JDK 17+, Android SDK (compileSdk 36); Gradle 8.11.1 via wrapper.
+Snapshot construction and packaging happen in the **coordination repo**
+([dsh-mobile](https://github.com/kelai141/dsh-mobile)); this repository is the shell subrepo.
+Requirements: JDK 17+, Android SDK (compileSdk 36); Gradle 8.11.1 comes from the wrapper.
 
 ```powershell
-# Snapshot build (Termux sources + dependency closure + pnpm + cordis overrides + slimming):
+# Snapshot build (Termux source + dependency closure + pnpm + authoritative cordis overlay + slim):
 node scripts\build-snapshot-013.mjs <arm64|x86_64>
 
-# One-shot packaging (snapshot → injection → gates → gradle):
-pwsh scripts\build-apk-013.ps1 -Suffix "-preview"
-# output: out\v0.13.0\dsh-mobile-apk-v<ver>-<abi>.apk
+# One-shot package (snapshot → inject → gates → gradle, both ABIs):
+pwsh scripts\build-apk-013.ps1 -Suffix ""
+
+# dev profile: single ABI x86_64 + preset 1 (larger artifacts, not for release)
+pwsh scripts\build-apk-013.ps1 -Fast
 ```
 
-Gates (inside `build-apk-013.ps1`): third-party compliance (`check-third-party.mjs`, GPL
-obligations) / secrets / ELF / cordis mount-set ⊇ injected set / LICENSES self-check (Python
-streaming) — any failure rejects the build.
+Artifacts land in `out\v<version>\dsh-mobile-apk-v<version>-<abi>.apk`.
+
+Gates are aggregated by `scripts/check-release-gates.mjs` (`--list` counts them). Any failing gate
+refuses packaging, and the strict release profile `--run --require` demands SKIP=0.
 
 ## Bridge protocol v1 (`window.androidBridge`)
 
-App name `DeepCode` (icon text DeepSearch), package `com.dsharnessmobile.shell`.
-`androidBridge.version` returns the app version (currently `0.13.0-fx-1`, versionCode 26);
-pages feature-detect on it. The ADB methods below are the preview authorization surface — the real
-channel completes in the 0.13.0 official release.
+The shell exposes **51 `@JavascriptInterface` methods**; the page feature-detects through
+`androidBridge.version`, which keeps APK and dsh versions decoupled.
 
-**Synchronous**
+**Synchronous getters**
 
-| method | signature | description |
-|---|---|---|
-| `version` | () → string | app version (`0.13.0-fx-1`) for feature detection |
-| `getSystemDark` | () → boolean | system dark mode (bypasses vendor WebViews whose `matchMedia` is stuck on light; used by the first-frame theme bridge) |
-| `checkEngine` | () → string | probes 127.0.0.1:3080; JSON `{running, latencyMs, error?}` |
-| `hasAllFilesAccess` | () → boolean | whether All Files Access is granted (external workspace requirement) |
-| `getPickToken` | () → string | one-shot token for the directory-picker bridge (validated by the engine-side pick endpoint) |
-| `copyText` | (text) → boolean | native clipboard write (WebView `clipboard.writeText` is always rejected; page falls back to this) |
-| `getDevLogEnabled` | () → boolean | dev debug-log toggle **fact** = preference && collector running (ST-11) |
-| `getImmersiveMode` | () → boolean | authoritative shell-side immersive value (ST-10; pairs with `setImmersiveMode`) |
-| `getAdbState` | () → string | ADB authorization state view (gate state machine): JSON `{fullAccess, allowSwitch, paired, wirelessDebugOn, message}` (preview) |
-| `discoverAdbPorts` | () → string | wireless-debug port auto-scan (native TCP sweep): pairing-port candidates as JSONArray; `[]` while wireless debugging is off (preview) |
-| `setAdbPair` | (code, pairPort, connectPort) → boolean | gate-3 pairing: real `adb pair` handshake; the code goes to argv only — never into the audit log (preview) |
-| `adbShell` | (cmd) → string | ADB shell primitive: JSON `{ok, stdout?, stderr?, guidance?}`; fail-closed when not authorized (preview) |
+| Method | Purpose |
+|---|---|
+| `version` | App version string, for feature detection |
+| `getSystemDark` | System dark mode (works around some vendors' broken `matchMedia`, used for the first-frame theme) |
+| `checkEngine` | Probes `127.0.0.1:3080`; JSON `{running, latencyMs, error?}` |
+| `hasAllFilesAccess` | Whether "All files access" is granted |
+| `getPickToken` | One-shot session token for the directory-picker bridge (validated by the engine-side pick endpoint) |
+| `copyText` | Writes to the system clipboard (fallback when WebView `clipboard.writeText` is denied) |
+| `getDevLogEnabled` / `setDevLogEnabled` | Dev-log switch fact (refuses optimistic reporting) |
+| `getImmersiveMode` / `setImmersiveMode` | Immersive status bar (authoritative shell-side value) |
+| `getOverlayEnabled` / `setOverlayEnabled` | Overlay toggle |
+| `getScreenScope` / `setScreenScope` | Screen scope (virtual-only / real-only / all) |
+| `getVdisplayScale` / `setVdisplayScale` | Virtual-display resolution scale |
+| `getVdisplayFloatEnabled` / `setVdisplayFloatEnabled` | Auto floating window on background |
+| `a11yStatus` | Accessibility control-channel status JSON |
+
+**Browser workbench**
+
+| Method | Purpose |
+|---|---|
+| `browserHostStatus` | Workbench status |
+| `browserHostShow` | Open / reopen (including the zero-arg overload — the WebView bridge matches by actual arity) |
+| `browserHostHide` / `browserHostClose` | Hide / close-and-destroy the current page |
+| `browserHostReload` | Reload (implies `browserHostShow`) |
+| `browserHostBounds` / `browserHostViewport` | Stage geometry / resolution (CSS viewport) |
+| `browserHostIdentity` | Identity profile switch (PC / mobile), payload `{profile, ua}` |
+
+**Virtual display**
+
+| Method | Purpose |
+|---|---|
+| `vdisplayStatus` / `vdisplayCreate` / `vdisplayDestroy` | Status / create (idempotent) / destroy |
+| `vdisplaySelect` | Select the presentation target (only owned virtual aliases are selectable) |
+| `vdisplayBounds` | Publishes sidebar stage geometry (native cover-view alignment) |
+| `forceDestroyVdisplay` | Force-destroys all virtual displays (same semantics as the settings section) |
 
 **Commands**
 
-| method | signature | description |
-|---|---|---|
-| `keepScreenOn` | (enable) | screen-on wake lock |
-| `showNotification` | (title, text) | test notification channel (POST_NOTIFICATIONS) |
-| `pickDirectory` | (callbackId) | SAF tree picker; result async via `window.__dshBridge.onDirectoryPicked(callbackId, path)` |
-| `pickImage` | (callbackId) | SAF image picker; result async via the same callback |
-| `setTextZoom` | (percent) | WebView font scale (50–200; Settings → General slider) |
-| `setImmersiveMode` | (enable) | immersive status bar toggle (true = status bar normally hidden) |
-| `downloadDebugLogs` | () | exports engine logs + environment info (zipped, system download/share dialog) |
-| `requestAllFilesAccess` | () | opens the system All Files Access grant page (special permission) |
-| `restartEngine` | () | restarts the engine process (EngineService watchdog brings it back) |
-| `shutdownToGuide` | () | stops the engine and falls back to the test screen (no auto-restart) |
-| `reloadWebUI` | () | reloads the Web UI |
-| `openConsole` | () | opens the built-in console |
-| `setDevLogEnabled` | (enabled) | sets the dev debug-log toggle (logs go under `dshdata/log/` when on) |
-| `setAdbAllow` | (enable) | gate-2 "allow access" switch (default off; off ⇒ channel fail-closed) (preview) |
-| `revokeAdbPair` | () | revoke pairing (disconnect + delete adbkey + clear state; audited) (preview) |
+| Method | Purpose |
+|---|---|
+| `pickDirectory` | SAF directory pick; the result returns asynchronously via `window.__dshBridge.onDirectoryPicked(callbackId, path)` |
+| `openPathChooser` | Path picker (workspace / shared dirs) |
+| `openNativePath` | "Open with another app" for a native path |
+| `settingsPath` / `exportSettingsDocument` / `exportConfig` / `importConfig` | Settings-document import / export |
+| `keepScreenOn` / `showNotification` | Keep screen on / notification test channel |
+| `requestAllFilesAccess` | Opens the system "All files access" grant page (special permission) |
+| `openA11ySettings` / `unlockRestrictedSettings` | Accessibility settings / one-tap unlock of restricted settings on Android 13+ |
+| `restartEngine` / `shutdownToGuide` / `reloadWebUI` / `openConsole` | Engine and UI lifecycle |
+| `incomingWorkspacePath` | Incoming-session workspace path |
 
-The bridge decouples the APK from the dsh version: pages feature-detect on `androidBridge.version`.
+## Tool surface (model-visible capabilities)
 
-## Online update protocol
+**Every AI-visible capability comes from a plugin**; the shell never registers tools directly. There
+are currently 45 tools, disclosed progressively by capability group (call `android_capabilities`
+first — only then do the tools appear in the list):
 
-1. App fetches `manifest.json`: `{url, sha256, size}` (default `http://10.0.2.2:8899/manifest.json`
-   for emulator testing; production points at a release server);
-2. Downloads the snapshot, verifies SHA-256, extracts to a staging dir (never touching the live tree),
-   atomically swaps `usr` → `usr-old` → new `usr`, then kills the old engine — the watchdog
-   restarts it from the new runtime.
+- **phone** (14): `android_ui_dump` / `android_ui_click` / `android_ui_input` / `android_ui_scroll` /
+  `android_ui_tree` / `android_ui_detail` / `android_ui_global` / `android_screenshot` /
+  `android_screen_list` / `android_app_launch` / `android_device_info` / `android_act_input` /
+  `android_web_dump` / `android_env_prepare`
+- **browser** (19): `browser_open` / `browser_snapshot` / `browser_click` / `browser_type` / … (17 more)
+- **virtual-display** (3): `android_vdisplay_create` / `android_vdisplay_destroy` / `android_vdisplay_status`
+- plus bridge (4), model-capability (2), linux-env (2), file-open (1)
 
-Test trigger: `adb shell am start -n com.dsharnessmobile.shell/.MainActivity -a com.dsharnessmobile.shell.action.UPDATE`;
-status is written to `files/update-status.txt`. Test server: serve `manifest.json` + the snapshot from any
-local HTTP server (default endpoint `http://10.0.2.2:8899/manifest.json` maps the host from the emulator).
-
-## APK self-update protocol (0.13.8)
-
-Fully separate from the runtime snapshot update above (`UpdateChecker` vs `UpdateManager`); this one
-handles the APK itself:
-
-1. **Manual only** — triggered by the startup screen's "check for updates" button, never automatically
-   (no background behavior around a 160MB asset);
-2. **Metadata** — `api.github.com/repos/kelai141/dsh-mobile-apk/releases/latest`, direct with 10/15s
-   timeouts; failures report the real reason (HTTP code / exception) and do **not** block the existing
-   snapshot-update check (the same button then runs it);
-3. **Asset match** — `dsh-mobile-apk-v<version>-<abi>.apk` with the ABI taken from `SUPPORTED_ABIS[0]`
-   (the device's native ABI; ARM-translated x86 devices report `x86_64,arm64-v8a,x86` and a naive
-   "any arm64" rule downloads the wrong package);
-4. **Version compare** — tag vs `BuildConfig.VERSION_NAME` (minus any `-SN-*` snapshot suffix), compared
-   digit-group by digit-group, covering both semver and the `0.13.7fx-N` revision naming;
-5. **Mirror-chain download** — `github.com` direct → `gh-proxy.com` → `ghfast.top`, landing in
-   `Documents/dshdata/updates/` (already inside the FileProvider mapping), `.tmp` → rename atomic;
-   verified against the `.sha256` asset when present (mismatch deletes the file and reports); an already
-   downloaded, verified package is reused instead of re-downloading after an interrupted permission flow;
-6. **Install** — without the "install unknown apps" grant the system settings screen is opened first
-   (the install resumes on `onResume` after granting), then a FileProvider URI + `ACTION_VIEW` opens the
-   system installer; a signature mismatch is rejected by the system. Nothing is ever installed silently.
-
-This is the shell's only external HTTP egress (every other shell-side HTTP call is same-origin to the
-local engine at `127.0.0.1:3080`) and it only fires on an explicit user tap.
+**Cross-screen usage**: any tool that accepts `screenId` runs on a virtual display when passed
+`"virtual-N"` (`android_screen_list` lists the current aliases and scope); the default `real` means
+the physical screen.
 
 ## Permissions
 
-| permission | purpose |
+| Permission | Purpose |
 |---|---|
-| `INTERNET` | WebView + engine probe + APK self-update (manual only) |
-| `POST_NOTIFICATIONS` | notification channel (runtime request on API 33+) |
-| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` | keep-alive foreground service |
-| `MANAGE_EXTERNAL_STORAGE` | All Files Access (external workspace requirement; special permission, user-granted) |
-| `REQUEST_INSTALL_PACKAGES` | open the system installer for a downloaded update (0.13.8; the user must grant "install unknown apps" in system settings) |
+| `INTERNET` | WebView + engine probe + APK self-update (manual trigger only) |
+| `POST_NOTIFICATIONS` | Notification channel (runtime request on API 33+) |
+| `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` | Keep-alive foreground service |
+| `MANAGE_EXTERNAL_STORAGE` | "All files access" (required for external workspaces; special permission, granted manually) |
+| `REQUEST_INSTALL_PACKAGES` | Launches the system installer for a downloaded update (the user must grant it explicitly) |
 
-SAF picking needs no permission.
+SAF directory and image picking need no permission. Virtual displays and privileged shell require the
+user to install, start and authorize **Shizuku**.
 
-## ABI & pagesize
+## Version history
 
-arm64 and x86_64 are both verified end-to-end; APKs are distributed per-ABI (the embedded snapshot
-is arch-specific). A 16KB-page build must be produced on a 16KB device (see docs/design.md §ABI).
+The full version history lives in [`docs/AGENTS/changelog-archive.md`](docs/AGENTS/changelog-archive.md)
+(reverse chronological, newest first). The development map and pitfall library are in
+[`AGENTS.md`](AGENTS.md) and [`docs/AGENTS/gotchas.md`](docs/AGENTS/gotchas.md).
 
 ## License
 
-MIT. Contains third-party components under their own licenses (see dependency declarations).
-GPL compliance: copyleft license texts ship in all three forms — snapshot `usr/share/LICENSES/`,
-repo `LICENSES/`, and APK `assets/licenses/`. Design rationale: `docs/design.md`.
+MIT. Third-party components under their own licenses (see the dependency notices). GPL compliance:
+the full copyleft text ships in three forms — snapshot `usr/share/LICENSES/`, repo `LICENSES/`, and
+APK `assets/licenses/`.
 
-## Acknowledgments & invitation
+## Thanks and invitation
 
-Thanks to the community for feedback and contributions — especially cdwlll (environment issues),
-haitunlang (MIUI 12 compatibility), TACONailoong (legacy-WebView compat), X-SCI-TECH (PRs),
-Yangerwei (file race feedback), gr12-cmd (armv7l demand), cmyfqwq (coverage-install compatibility feedback).
+**Thanks to every community member for the feedback and contributions!** Special thanks to cdwlll
+(environment reports), haitunlang (MIUI12 compatibility), TACONailoong (legacy WebView compatibility
+approach), X-SCI-TECH (PR contribution), Yangerwei (file race feedback), gr12-cmd (armv7l request),
+and cmyfqwq (in-place upgrade feedback).
 
-Contributors welcome: Android compatibility testing (Huawei / Honor / Xiaomi custom WebViews),
-armv7l and more device support, completing the ADB channel, and growing the plugin ecosystem.
-Development & contribution guidelines live in each repo's `AGENTS.md`.
+**Developers are very welcome to join**: issues, PRs, suggestions and improvements are all
+appreciated. What we especially need: Android compatibility testing (vendor WebViews such as Huawei /
+Honor / Xiaomi), support for more devices (armv7l), Shizuku channel work, and plugin-ecosystem
+expansion. Development and maintenance conventions live in each repository's `AGENTS.md`.
+
+## Join the user group
+
+<img src="qrcode/qqcommunity-1.png" alt="dsh-mobile user group QR code (group no. 1109493992)" width="320">
+
+Join the dsh-mobile user group for feedback: usage questions, device compatibility and feature
+requests are all welcome there.

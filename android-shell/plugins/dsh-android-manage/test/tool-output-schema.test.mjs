@@ -219,7 +219,7 @@ test('FX-212.5：V2 下 parentId 由预序+深度重建——render 的 ^nX 与 
   assert.equal(violations(byName('android_ui_detail'), r).length, 0)
 })
 
-test('D4：android_ui_detail 已注册（源码级 defineTool 集合 − 注册集合 = 空集，注册数 = 13）', async () => {
+test('D4：android_ui_detail 与 android_screen_list 已注册（源码级 defineTool 集合 − 注册集合 = 空集，注册数 = 14）', async () => {
   const { face } = makeFace({ snapshot: v2Payload() })
   const { tools } = applyManage(face)
   const src = readFileSync(join(HERE, '..', 'src', 'index.ts'), 'utf8')
@@ -227,8 +227,8 @@ test('D4：android_ui_detail 已注册（源码级 defineTool 集合 − 注册�
   const registered = new Set(tools.map((t) => t.name))
   const missing = [...defined].filter((n) => !registered.has(n))
   assert.deepEqual(missing, [], 'defineTool 过但没进注册数组 = 死代码（提示文案还在引导模型调用）')
-  assert.equal(registered.size, 13, '注册数必须为 13')
-  assert.equal(defined.size, 13)
+  assert.equal(registered.size, 14, '注册数必须为 14')
+  assert.equal(defined.size, 14)
 })
 
 test('D5：策略答「ADB 不可用」→ 四个 ADB 专属工具动手前拒绝，且不碰设备', async () => {
@@ -278,10 +278,11 @@ test('D5：env_prepare 不再以「环境准备完成」收尾假成功（子步
   assert.equal(violations(byName('android_env_prepare'), r).length, 0)
 })
 
-test('D8 + §5.3.3：13 个工具的未授权拒绝分支都带 denied=true 且过自己的 schema', async () => {
+test('D8 + §5.3.3：13 个屏幕读写工具的未授权拒绝分支都带 denied=true 且过自己的 schema', async () => {
   const { face } = makeFace({ gateFor: () => ({ ok: false, guidance: '未授权（测试桩）' }) })
   const { tools } = applyManage(face)
-  assert.equal(tools.length, 13)
+  const privilegedTools = tools.filter((tool) => tool.name !== 'android_screen_list')
+  assert.equal(privilegedTools.length, 13)
   // 各工具的必填参数（defineTool 的参数面校验在 execute 之前，缺参会先抛 ToolArgsError）
   const args = {
     android_act_input: { action: 'keyevent', keycode: 4 },
@@ -289,12 +290,15 @@ test('D8 + §5.3.3：13 个工具的未授权拒绝分支都带 denied=true 且�
     android_app_launch: { pkg: 'com.example' },
     android_ui_global: { action: 'back' },
   }
-  for (const tool of tools) {
+  for (const tool of privilegedTools) {
     const r = await tool.execute(args[tool.name] ?? {}, EXEC)
     const bad = violations(tool, r)
     assert.equal(r.denied, true, tool.name + ' 拒绝分支必须带 denied:true')
     assert.equal(bad.length, 0, tool.name + ' 拒绝返回值违规：' + bad.join('; '))
   }
+  const screenList = tools.find((tool) => tool.name === 'android_screen_list')
+  const metadata = await screenList.execute({}, EXEC)
+  assert.equal(metadata.scope, 'virtual-only', '无内容的 capability metadata 不因会话权限门消失')
 })
 
 test('D10/D6：web_dump 未声明键被白名单剔除；url/title 缺席时整键不发', async () => {
@@ -374,10 +378,10 @@ test('D9：明细落盘失败时句柄不得停留在上一轮（detailHandle/de
   }
 })
 
-test('output.schema 自洽：13 个工具都是 object 且 additionalProperties=false（拼写错误防线）', async () => {
+test('output.schema 自洽：14 个工具都是 object 且 additionalProperties=false（拼写错误防线）', async () => {
   const { face } = makeFace({ snapshot: v2Payload() })
   const { tools } = applyManage(face)
-  assert.equal(tools.length, 13)
+  assert.equal(tools.length, 14)
   for (const tool of tools) {
     assert.equal(tool.output.schema.type, 'object', tool.name)
     assert.equal(tool.output.schema.additionalProperties, false, tool.name + ' 不得放宽 additionalProperties')

@@ -45,6 +45,15 @@ class FileIncomingCleanupTest {
   }
 
   @Test
+  fun queuedBlankSessionSourceSurvivesUntilBrowserClaim() {
+    val entries = listOf("draft.pdf", "unrelated.txt", ".sessions")
+    val queued = listOf("/data/user/0/com.dsharnessmobile.shell/files/home/.dsh/workspaces/incoming/draft.pdf")
+    val deletions = FileIncoming.cleanupDeletions(entries, emptyList(), queued)
+    assertEquals(listOf("unrelated.txt"), deletions)
+    assertFalse("未 claim 的外部附件草稿源文件不许被 onTaskRemoved 删除", deletions.contains("draft.pdf"))
+  }
+
+  @Test
   fun stalePendingEntryDoesNotShieldUnrelatedFiles() {
     val entries = listOf("a.pdf", "b.pdf")
     val pending = listOf("/x/incoming/gone.pdf")

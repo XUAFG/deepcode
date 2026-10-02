@@ -9,6 +9,8 @@ import { BackStackSignal } from '../src/client/mobile/back-stack.ts'
 let signal: BackStackSignal
 let toggleSidebar: ReturnType<typeof vi.fn>
 let uplink: ReturnType<typeof vi.fn>
+let leaveMainPanel: ReturnType<typeof vi.fn>
+let activePanelId: string | null
 
 /** Deliver the pending MutationObserver batch (jsdom delivers it as a microtask). */
 function flush(): Promise<void> {
@@ -67,8 +69,16 @@ beforeEach(() => {
   setPhoneForm(false)
   toggleSidebar = vi.fn()
   uplink = vi.fn()
+  leaveMainPanel = vi.fn()
+  // Every case below is about the drawer, dialogs, and menus: the Conversation is
+  // presented, so the main-panel layer must not appear (FX1-C, main-panel-back.spec.ts).
+  activePanelId = null
   window.dshBackBridge = { setAvailable: uplink }
-  signal = new BackStackSignal({ toggleSidebar })
+  signal = new BackStackSignal({
+    toggleSidebar,
+    activePanelId: () => activePanelId,
+    leaveMainPanel,
+  })
 })
 
 afterEach(() => {
@@ -254,6 +264,44 @@ describe('other layers', () => {
     expect(window.__dshBackKinds).toEqual(['right-fullscreen'])
     expect(window.__dshBack?.()).toBe(true)
     expect(seenMode).toEqual(['click'])
+  })
+
+  // D8 (2026-09-25): the plugin's own attachment-source popup is mounted on document.body, so its
+  // presence is exactly "open". It used to be invisible to this stack; the shell's back callback
+  // treats "no layer" as FINISH_ACTIVITY (BackGate.kt:56-60), so back with the menu open exited the
+  // app instead of closing the menu.
+  it('counts the attachment source menu as a layer and closes it, not the activity', async () => {
+    signal.attach()
+    const popup = document.createElement('div')
+    popup.setAttribute('data-dsh-attachment-picker-menu', '')
+    document.body.appendChild(popup)
+    const seen: string[] = []
+    document.addEventListener('pointerdown', event => { seen.push((event.target as Element)?.tagName ?? '') }, true)
+    await flush()
+    expect(window.__dshBackKinds).toEqual(['attachment-menu'])
+    expect(window.__dshBackDepth).toBe(1)
+    expect(uplink).toHaveBeenLastCalledWith(true)
+    expect(window.__dshBack?.()).toBe(true)
+    expect(seen).toEqual(['BODY'])
+
+    // Closing the menu (its own dismissal does this) is what pops the layer.
+    popup.remove()
+    await flush()
+    expect(window.__dshBackKinds).toEqual([])
+    expect(uplink).toHaveBeenLastCalledWith(false)
+  })
+
+  it('stacks the attachment menu above an open upstream menu', async () => {
+    signal.attach()
+    const upstream = document.createElement('div')
+    upstream.setAttribute('data-trigger-menu', '')
+    document.body.appendChild(upstream)
+    const popup = document.createElement('div')
+    popup.setAttribute('data-dsh-attachment-picker-menu', '')
+    document.body.appendChild(popup)
+    await flush()
+    expect(window.__dshBackKinds).toEqual(['menu', 'attachment-menu'])
+    expect(window.__dshBack?.()).toBe(true)
   })
 
   it('dismisses a menu with the menu own outside-pointerdown path', async () => {

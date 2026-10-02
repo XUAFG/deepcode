@@ -1,6 +1,11 @@
 # 壳 APK 设计（dsh-mobile-apk）
 
 > 版本 v2.0 ｜ 2026-08-20 ｜ 由 M1 纯壳演进为内嵌快照运行时（M2 保活/自更新/控制台已落地）
+>
+> **已归档的历史设计快照**：文中版本号（0.12.4 等）与 Shizuku 定位描述停留于 M2 时期。现行权威
+> 文档在 `docs/AGENTS/`（ARCHITECTURE / BRIDGE-API / modules / RUNTIME-PATCHES 等）与 `AGENTS.md`；
+> 0.14.0 起 Shizuku 已是正式特权 transport（ShizukuTransport/ShizukuUserService），不再只是
+> best-effort 保活增强。本文仅作历史背景阅读。
 
 ---
 

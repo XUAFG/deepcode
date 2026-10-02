@@ -17,6 +17,7 @@ $pluginSrcs = @('dsh-shell-termux','dsh-client-ui-responsive','dsh-host-web-comp
 #     Abort if any repo has uncommitted changes — otherwise tgz/APK ship uncommitted code that can't be diffed for troubleshooting.
 $gitRepos = @('dsh-shell-termux','dsh-client-ui-responsive','dsh-host-web-compat','dsh-mobile-apk')
 if (-not $SkipGitCheck) {
+  $checked = 0
   foreach ($repo in $gitRepos) {
     $dirty = & git -C (Join-Path $root $repo) status --porcelain 2>$null
     if ($LASTEXITCODE -ne 0) { throw ("git 不可用或仓库缺失: " + $repo) }
@@ -24,8 +25,27 @@ if (-not $SkipGitCheck) {
       throw ("发布中止：$repo 有未提交改动（共 " + ($dirty.Count) + " 项）——请先提交或显式 -SkipGitCheck。`n" +
         ($dirty | Select-Object -First 5 | ForEach-Object { "  " + $_ }) -join "`n")
     }
+    $checked += 1
   }
-  Write-Output "== git 工作区干净（4 仓库）"
+  # 协调仓根（0.14.1 §1.1b 决策 1 / §2.4 前置项 2）：上面四个子仓**漏掉了协调仓根自身**——
+  # plugins/** 与 scripts/** 有未提交改动不会绊停发布链，而这两处正是注入集与门禁的实现面
+  # （漏掉 = 发布产物可追溯到未提交的门禁/插件源码，正是本门禁要防的那种不可 diff 交付）。
+  # 布局判定：只有**协调仓布局**（根下存在 dsh-mobile-apk 子仓）才做本检查；apk 自包含树里
+  # 根本身就是 apk 仓（已在上面列表中，`dsh-mobile-apk` 子目录不存在）——不做本检查，避免重复。
+  # pathspec 限定到**喂给发布产物的目录**：根级未跟踪草稿（.tmp-*、临时截图、研究目录）不属发布面，
+  # 不该拦发布；用全仓 status 会把它们当脏（实测根仓有数十项此类未跟踪文件）。
+  $coordRoot = Test-Path (Join-Path $root "dsh-mobile-apk")
+  if ($coordRoot) {
+    $releasePaths = @('plugins','scripts','vendor','LICENSES')
+    $dirtyRoot = & git -C $root status --porcelain -- @releasePaths 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "git 不可用或协调仓根不是 git 仓库" }
+    if ($dirtyRoot) {
+      throw ("发布中止：协调仓根有未提交改动（发布面 " + ($releasePaths -join '/') + "，共 " + ($dirtyRoot.Count) + " 项）——请先提交或显式 -SkipGitCheck。`n" +
+        ($dirtyRoot | Select-Object -First 5 | ForEach-Object { "  " + $_ }) -join "`n")
+    }
+    $checked += 1
+  }
+  Write-Output ("== git 工作区干净（" + $checked + " 个仓库面）")
 }
 
 # 0b) 门禁聚合入口（0.13.8-b 批 B2 FX-208.E2 发布链 / F-ENV-13）：发布组装必须跑与打包**同源**的
@@ -35,11 +55,18 @@ $gateAgg = Join-Path $root "scripts\check-release-gates.mjs"
 Write-Output "== 发布门禁接线断言（唯一接线面聚合入口）=="
 node $gateAgg
 if ($LASTEXITCODE -ne 0) { throw "发布门禁接线断言失败，中止组装" }
-Write-Output "== 发布门禁集执行（与打包同源）=="
-# ST-31：发布链要求 SKIP=0——--require 让每个支持它的门禁把 SKIP 判为失败（不得以 SKIP 结案）。
-node $gateAgg --run --require --snapshot-dir (Join-Path $root "dsh-mobile-apk\snapshot")
-if ($LASTEXITCODE -ne 0) { throw "发布门禁未通过，中止组装" }
-if ($GatesOnly) { Write-Output "== -GatesOnly：门禁段结束（未做插件构建与打包）=="; exit 0 }
+# G.0 ① 净冗余消除（0.14.2-fx-2，用户裁定「裁剪掉无意义校验」）：**发布路径不再在注入前输入上复跑整套门禁**。
+# 真因（实测）：这两个输入 tar 由 build-apk-013.ps1 产出，而它**已经**对它们跑过自己的内联门禁集；
+# 本脚本第 2f) 段还会对**真正的发布物**（注入后 tar）再跑一次同一套 `--run --require`。
+# 原先这里（第 60 行）再跑一遍 = 同一批门禁在三种输入上各跑一次，而本段输入既不是发布物、也不是唯一输入面 ⇒ 净冗余。
+# 不可裁面：门禁集本身仍在发布关键路径上（2f 对发布物逐 ABI 跑，--require 严格档），本段只是去掉它的副本。
+if ($GatesOnly) {
+  # -GatesOnly 是「只跑门禁、不打包」的验收档，此时 2f) 不会执行，故本档仍需在此跑一次。
+  Write-Output "== 发布门禁集执行（-GatesOnly 档，与打包同源）=="
+  node $gateAgg --run --require --snapshot-dir (Join-Path $root "dsh-mobile-apk\snapshot")
+  if ($LASTEXITCODE -ne 0) { throw "发布门禁未通过，中止组装" }
+  Write-Output "== -GatesOnly：门禁段结束（未做插件构建与打包）=="; exit 0
+}
 
 # 0) Version (default: the APK versionName)
 $apkVer = (Select-String -Path (Join-Path $root "dsh-mobile-apk\app\build.gradle.kts") -Pattern 'versionName = "([^"]+)"').Matches.Groups[1].Value
@@ -84,17 +111,28 @@ foreach ($abi in $ABIS) {
   # 2b) npm layer assertion
   $hasNpm = & tar -tf $abi.f 2>$null | Select-String "usr/lib/node_modules/@deepseek-ai/dsh/package.json" | Select-Object -First 1
   if (-not $hasNpm) { throw ("快照缺少 npm 层（dsh 引擎未安装）: " + $abi.f) }
-  # 2c) Host injection: byte-level tar stream replacement (Python tarfile, zero symlink-metadata loss;
-  #     Windows bsdtar needs admin rights to unpack symlinks — silent loss would drop node SONAME libs)
-  $injectPy = Join-Path $root "scripts\inject-snapshot.py"
-  $outTmp = $abi.f + ".new"
-  Remove-Item $outTmp -Force -ErrorAction SilentlyContinue
-  $pkgArgs = @()
-  foreach ($p in $pluginSrcs) { $pkgArgs += (Join-Path $root $p) }
-  python $injectPy $abi.f $outTmp @pkgArgs 2>&1 | Select-Object -Last 3
-  if (-not (Test-Path $outTmp)) { throw ("快照注入失败: " + $abi.n) }
-  Move-Item $outTmp $abi.f -Force
-  Write-Output ("  快照 OK: " + $abi.n + " (" + $abi.expect + " + npm 层 + 插件注入)")
+  # 2c) Host injection —— G.0 ② 净冗余消除（0.14.2-fx-2）：**输入已是注入后产物时跳过重复注入**。
+  #     判据（正向事实，不是「大概齐」）：tar 里已存在注入集插件路径
+  #     `home/.dsh/profiles/web/node_modules/@dsh-android/dsh-android-bridge/lib/` ⇒ 该输入就是
+  #     build-apk-013.ps1 导出的**注入后**快照（发布链的输入正是它），再注入一遍是纯重复
+  #     （每 ABI 全量重打包约 743MB），且下方 2e) 会逐字节核对「插件确实在快照里且与发布 tgz 同源」
+  #     ——即「是否真的注入过」仍由门禁守着，不靠这里重做一遍来保证。
+  $alreadyInjected = & tar -tf $abi.f 2>$null | Select-String "home/.dsh/profiles/web/node_modules/@dsh-android/dsh-android-bridge/lib/" | Select-Object -First 1
+  if ($alreadyInjected) {
+    Write-Output ("  注入跳过（输入已是注入后产物，2e 逐字节复核）: " + $abi.n)
+  } else {
+    # 字节级 tar 流替换（Python tarfile，零符号链接元数据损失）——
+    # Windows bsdtar 解软链需管理员权限，静默丢链会丢 node 的 SONAME 库。
+    $injectPy = Join-Path $root "scripts\inject-snapshot.py"
+    $outTmp = $abi.f + ".new"
+    Remove-Item $outTmp -Force -ErrorAction SilentlyContinue
+    $pkgArgs = @()
+    foreach ($p in $pluginSrcs) { $pkgArgs += (Join-Path $root $p) }
+    python $injectPy $abi.f $outTmp @pkgArgs 2>&1 | Select-Object -Last 3
+    if (-not (Test-Path $outTmp)) { throw ("快照注入失败: " + $abi.n) }
+    Move-Item $outTmp $abi.f -Force
+    Write-Output ("  快照 OK: " + $abi.n + " (" + $abi.expect + " + npm 层 + 插件注入)")
+  }
   Copy-Item $abi.f (Join-Path $snapDir ("snapshot-" + $abi.n + ".tar.xz")) -Force
 }
 
@@ -120,6 +158,27 @@ foreach ($p in $pluginSrcs) {
 }
 Remove-Item $tmp2 -Recurse -Force -ErrorAction SilentlyContinue
 
+# 2f) 注入后产物门禁（review §2.3，2026-09-14）：0b 的聚合入口跑在宿主注入之前（验的是**输入**快照），
+#     而发布物是注入后的 tar——在发布快照上复跑聚合入口（--snapshot-dir 指向 $snapDir），并补跑
+#     不在声明集合里的长驻产物门禁（挂载集 / overlay 抽验 / 权限模式 / 第三方合规）。
+Write-Output "== 注入后产物门禁（发布物级复跑）=="
+node $gateAgg --run --require --snapshot-dir $snapDir
+if ($LASTEXITCODE -ne 0) { throw "注入后产物门禁未通过，中止组装" }
+$pluginManifestAll = Get-Content (Join-Path $root "scripts\plugin-dirs.json") -Raw | ConvertFrom-Json
+$pluginDirsAll = @($pluginManifestAll.dirs | ForEach-Object { Join-Path $root $_ })
+$externDirsAll = @($pluginManifestAll.externals | ForEach-Object { Join-Path $root $_ })
+node (Join-Path $root "scripts\check-patch-mounts.mjs") (Join-Path $root "scripts\profile-web.cordis.patch.yml") @pluginDirsAll @externDirsAll 2>&1 | Select-Object -Last 3
+if ($LASTEXITCODE -ne 0) { throw "注入后 patch 挂载集校验失败，中止组装" }
+foreach ($s in @(@{n='arm64'; f=$armSnap}, @{n='x86_64'; f=$x86Snap})) {
+  node (Join-Path $root "scripts\check-engine-overlay.mjs") $s.f 2>&1 | Select-Object -Last 2
+  if ($LASTEXITCODE -ne 0) { throw ("注入后引擎 overlay 抽验失败: " + $s.n) }
+  node (Join-Path $root "scripts\check-snapshot-file-modes.mjs") $s.f 2>&1 | Select-Object -Last 2
+  if ($LASTEXITCODE -ne 0) { throw ("注入后快照权限模式校验失败: " + $s.n) }
+}
+node (Join-Path $root "scripts\check-third-party.mjs") x --tar $x86Snap 2>&1 | Select-Object -Last 3
+if ($LASTEXITCODE -ne 0) { throw "注入后第三方合规校验失败（x86_64）" }
+Write-Output "  注入后产物门禁全部通过"
+
 # 3) Dual-ABI APK build (swap snapshot in assets, build twice)
 $assets = Join-Path $root "dsh-mobile-apk\app\src\main\assets\snapshot.tar.xz"
 foreach ($abi in @(@{n='arm64-v8a'; f=$armSnap}, @{n='x86_64'; f=$x86Snap})) {
@@ -134,19 +193,30 @@ foreach ($abi in @(@{n='arm64-v8a'; f=$armSnap}, @{n='x86_64'; f=$x86Snap})) {
   node (Join-Path $root "scripts\check-snapshot-fingerprint.mjs") --require
   if ($LASTEXITCODE -ne 0) { throw ("快照指纹对账失败（" + $abi.n + "）：tar 与声明值不一致，中止组装") }
   Push-Location (Join-Path $root "dsh-mobile-apk")
-  & $Gradle assembleDebug --offline --no-daemon --rerun-tasks 2>$null | Out-Null
+  # 0.14.2-fx-2 修（本机实测）：不得用系统 gradle + --offline 组装发布包 ——
+  # AndroidX 产物不在系统 gradle 的依赖缓存里，离线档下 arm64-v8a/x86_64 必失败：
+  #   "No cached version of androidx.webkit:webkit:1.12.1 available for offline mode"（22s 即 break）
+  # 而 build-apk-013.ps1 走项目 wrapper、不带 --offline，同一棵工作树 BUILD SUCCESSFUL。
+  # 两条链必须同一条调用口径，否则「本地发布链」只在「开发链」成功过的那台机器上偶然可用。
+  # -PversionNameSuffix 与开发链同参；--rerun-tasks 已去（产物由 gradle 缓存裁决，与开发链一致）。
+  if ($Gradle -eq "gradle") { $Gradle = ".\gradlew.bat" }
+  & $Gradle :app:assembleDebug --no-daemon -PversionNameSuffix="$Version" 2>$null | Out-Null
   if ($LASTEXITCODE -ne 0) { throw ("APK build failed (" + $abi.n + ")") }
   Pop-Location
   $apk = Get-ChildItem (Join-Path $root "dsh-mobile-apk\app\build\outputs\apk\debug\app-debug.apk") | Select-Object -First 1
   Copy-Item $apk.FullName (Join-Path $apkDir ("dsh-mobile-apk-v" + $Version + "-" + $abi.n + ".apk")) -Force
 }
 
-# 4) Snapshot security gate（ST-06 / F-ENV-08 口径：机密门禁只有一份被调用的实现 = .mjs 跨平台版；
-# 旧 .ps1 走 cmd /c tar，$LASTEXITCODE 反映 cmd 尾命令而非脚本 exit 码，只能靠输出标记判定）
-node (Join-Path $root "scripts\check-snapshot-secrets.mjs") $armSnap
-if ($LASTEXITCODE -ne 0) { throw "arm64 快照安全门禁未通过，发布中止" }
-node (Join-Path $root "scripts\check-snapshot-secrets.mjs") $x86Snap
-if ($LASTEXITCODE -ne 0) { throw "x86_64 快照安全门禁未通过，发布中止" }
+# 4) Snapshot security gate —— G.0 ④ 冗余消除（0.14.2-fx-2）：**本段不再单独跑**。
+#
+# 真因（实测）：上面 2f) 的 `node $gateAgg --run --require --snapshot-dir $snapDir` 已经对**同一个** $snapDir
+# 里的两个 tar 逐 ABI 跑了 check-snapshot-secrets（聚合入口的 secrets 分支对 abis 循环，且带 --require 严格档）。
+# 而本段原先的两条直接调用读的是 $armSnap / $x86Snap —— 它们正是第 118 行 `Copy-Item $abi.f $snapDir` 的**源**，
+# 即**逐字节同一份文件**。故本段是纯重复执行：单次 72.7s，一次发版白付约 145s，且**严格度更低**
+# （不带 --require，缺件时可能以非严格口径结案）——重复 + 更弱，属净损失。
+# 收敛后 secrets 在发布链上的执行遍数：注入前聚合 2 遍（每 ABI 一次，输入是注入前 tar）+ 注入后聚合 2 遍
+# （每 ABI 一次，输入是发布物 tar）；两个输入面**内容不同**、都必须验，故保留。本段删除的只是它们的副本。
+# 不可裁面声明：机密门禁本身仍在发布关键路径上（聚合入口 --run --require），只是不再跑第三遍。
 
 # 5) sha256 manifest + notes template
 $manifest = @()

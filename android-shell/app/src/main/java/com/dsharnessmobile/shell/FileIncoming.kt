@@ -8,7 +8,8 @@ import java.net.URLDecoder
 
 /**
  * 文件直达会话（0.13.0 PRD F5，M3.5）：外部「使用其他应用打开 / 分享」→
- * 路径校验与文件名净化 → 安全拷贝进临时工作区 → 交给引擎侧插件强制新会话。
+ * 路径校验与文件名净化 → 安全拷贝进临时工作区 → 交给引擎侧插件创建空白强制新会话与
+ * 未发送的 file attachment 草稿。壳侧不生成 `@路径` user message，也不自动发送。
  *
  * - 只接受 content:// 与 file:// 真实路径；白名单前缀校验；拒绝 ../ 上级跳转
  * - 文件名净化（0.13.8 #177 白名单化）：路径分隔符 `/` `\` 是路径语义 token 一律替换、
@@ -38,7 +39,11 @@ object FileIncoming {
 
   /** 路径校验：仅接受白名单前缀的真实路径，拒绝上级跳转。返回可拷资源 Uri 描述或 null。 */
   fun validate(uriString: String, context: Context): Uri? {
-    val uri = try { Uri.parse(URLDecoder.decode(uriString, "UTF-8")) } catch (_: Exception) { return null }
+    // A content URI's encoded document id is opaque. URLDecoder on the whole URI turns `%2F`
+    // into a path separator before DocumentsProvider sees it, so a valid external file can become
+    // its parent directory and copy as a zero-byte draft. Uri.parse retains encoded authority/path
+    // semantics; `uri.path` below is still decoded for file:// traversal checks.
+    val uri = try { Uri.parse(uriString) } catch (_: Exception) { return null }
     if (uri.scheme == null) return null
     val ok = when (uri.scheme) {
       "content" -> true // 内容提供者：临时读授权；只拷贝不引用
@@ -231,12 +236,18 @@ object FileIncoming {
 
   /**
    * 本次全清要删的条目名（纯函数，JVM 单测锁定）。豁免面 = 三个元数据条目（.sessions /
-   * .pending-notify.ndjson / .meta.ndjson）∪ 待发清单里仍未受理的来件——「有 pending 就不许
-   * 删它引用的文件」，与 .sessions 的既有豁免同构。
+   * .pending-notify.ndjson / .meta.ndjson）∪ 待发清单或 `.sessions` 队列仍引用的来件——
+   * 「仍可投递或仍待浏览器草稿 claim 的文件不许删」，与源文件 TTL 清理职责分离。
    */
-  internal fun cleanupDeletions(entries: List<String>, pendingPaths: List<String>): List<String> {
-    val pendingNames = pendingPaths.map { File(it).name }.toSet()
-    return entries.filter { it != SESSIONS_ENTRY && it != PENDING_ENTRY && it != META_ENTRY && it !in pendingNames }
+  internal fun cleanupDeletions(
+    entries: List<String>,
+    pendingPaths: List<String>,
+    queuedPaths: List<String> = emptyList(),
+  ): List<String> {
+    val protectedNames = (pendingPaths + queuedPaths).map { File(it).name }.toSet()
+    return entries.filter {
+      it != SESSIONS_ENTRY && it != PENDING_ENTRY && it != META_ENTRY && it !in protectedNames
+    }
   }
 
   /** 待发清单里的路径（未受理来件的绝对路径）；读不到 = 空（fail-soft）。 */
@@ -246,9 +257,23 @@ object FileIncoming {
     emptyList()
   }
 
+  /** Engine queue records whose source file must survive task removal until the browser claims it. */
+  private fun queuedSessionPaths(context: Context): List<String> {
+    val dir = File(tmpWorkspace(context), SESSIONS_ENTRY)
+    return try {
+      dir.listFiles { file -> file.isFile && file.name.endsWith(".json") }
+        ?.mapNotNull { file ->
+          try { org.json.JSONObject(file.readText()).optString("path").takeIf { it.isNotBlank() } } catch (_: Exception) { null }
+        }
+        ?: emptyList()
+    } catch (_: Exception) {
+      emptyList()
+    }
+  }
+
   /** 清理本次临时会话与临时工作区内容（幂等；不阻塞进程退出——生命周期礼仪 F5.3）。
    *  拷贝在途时让路（0.13.8 #174：后台拷贝与 onTaskRemoved 全清曾可竞态删半个文件），
-   *  FX-211.2 起**投递/重试在途时同样让路**，且任何仍被待发清单引用的来件与三个元数据条目
+   *  FX-211.2 起**投递/重试在途时同样让路**，且任何仍被待发清单或 `.sessions` 草稿队列引用的来件与三个元数据条目
    *  一律不删（残余内容交给下次 TTL 清扫）。 */
   fun cleanupTmp(context: Context) {
     if (!workspaceWipeAllowed(activeCopies.get(), activeDeliveries.get())) {
@@ -258,7 +283,7 @@ object FileIncoming {
     try {
       val dir = tmpWorkspace(context)
       val entries = dir.listFiles()?.map { it.name } ?: emptyList()
-      val deletions = cleanupDeletions(entries, pendingPaths(context))
+      val deletions = cleanupDeletions(entries, pendingPaths(context), queuedSessionPaths(context))
       var removed = 0
       for (name in deletions) {
         if (File(dir, name).delete()) removed++

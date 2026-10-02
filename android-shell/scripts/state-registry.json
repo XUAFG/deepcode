@@ -33,10 +33,10 @@
     },
     {
       "id": "all-files-access",
-      "holder": "壳侧（AdbState / AndroidBridge）",
-      "writePath": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/AdbState.kt",
+      "holder": "壳侧（AndroidBridge + prefs）",
+      "writePath": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt:hasAllFilesAccess/requestAllFilesAccess",
       "sourceOfTruth": "Environment.isExternalStorageManager()（系统事实）",
-      "syncPath": "getter 每次现读系统事实；onResume 另调 AdbState.syncFullAccess 收敛壳内缓存（ST-01）",
+      "syncPath": "getter 每次现读系统事实（0.14.0：ADB 退役后不再有 syncFullAccess 壳内缓存与回前台收敛）",
       "evidence": {
         "kind": "grep",
         "file": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt",
@@ -56,15 +56,15 @@
       }
     },
     {
-      "id": "adb-authorization",
-      "holder": "壳侧（AdbState）",
-      "writePath": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/AdbState.kt",
-      "sourceOfTruth": "三道人门（fullAccess / allowSwitch / paired）",
-      "syncPath": "桥 getAdbState() 每次现读三道门并合成 JSON，不做跨调用缓存",
+      "id": "shizuku-privileged-channel",
+      "holder": "壳侧（ShizukuTransport / ShizukuUserService）+ 插件 dsh-android-bridge",
+      "writePath": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/ShizukuTransport.kt",
+      "sourceOfTruth": "Shizuku 管理器授权 + UserService 绑定（live；授权只由 Shizuku 管理器写，应用不自授）",
+      "syncPath": "控制队列 caps.shizuku 实时上报（ControlCarrier，5s TTL）；引擎侧 shizukuReady() 现读 caps，不做启动期快照（0.14.0：内置 adb 三条门随 AdbState 退役）",
       "evidence": {
         "kind": "grep",
-        "file": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/AndroidBridge.kt",
-        "pattern": "fun getAdbState"
+        "file": "dsh-mobile-apk/app/src/main/java/com/dsharnessmobile/shell/ControlCarrier.kt",
+        "pattern": "shizuku"
       }
     },
     {
@@ -91,11 +91,11 @@
       }
     },
     {
-      "id": "profile-patch-reload",
-      "holder": "构建链（快照出厂清单）+ 引擎树补丁",
-      "writePath": "scripts/lib/profile-seed.mjs + scripts/patches/registry.json:perf-patch-reload-N1",
-      "sourceOfTruth": "出厂 profile 清单 home/.dsh/profiles/<name>/package.json",
-      "syncPath": "全新安装 = 构建期 seed 写 startup；存量升级 = N1 补丁在 installation-owned 元组下把旧默认 live 归一化（P-AC-23/24）",
+      "id": "shipped-profile-manifest",
+      "holder": "构建链（快照出厂清单）",
+      "writePath": "scripts/lib/profile-seed.mjs",
+      "sourceOfTruth": "出厂 profile 清单 home/.dsh/profiles/<name>/package.json 的 dsh.profile.bundles",
+      "syncPath": "0.14.2 起该状态只剩「清单形状」：bundles 非空 + 无上游已不读的死键。原 profile-patch-reload（patchReload 出厂值 + N1 存量归一化）随上游删除该机制而退役——live reload 改由常驻空转的 dsh-client-hmr 承担，构建期不再写任何 reload 旋钮",
       "evidence": {
         "kind": "gate",
         "file": "scripts/check-perf-instrumentation.mjs"

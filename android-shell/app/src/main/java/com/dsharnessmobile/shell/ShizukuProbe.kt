@@ -1,6 +1,7 @@
 package com.dsharnessmobile.shell
 
 import android.content.Context
+import android.content.pm.PackageManager
 import org.json.JSONObject
 
 /**
@@ -10,9 +11,9 @@ import org.json.JSONObject
  *  - **debug-only**：非 debuggable 构建一律返回结构化拒绝，不做任何探测（不引入运行期成本）。
  *  - **fail-closed**：安装/运行/授权/版本/uid 五态逐项独立 `runCatching`，任一项异常不得
  *    影响其它项，也不得把「未知」写成可用。
- *  - **零编译期依赖**：本文件经反射读 Shizuku（与既有 [ShizukuSupport] 同口径），
- *    因此 Shizuku aar 尚未接入时本文件照样编译；`bindUserService` 等需要 aar 类型的能力
- *    属 S5（依赖落地后改用直连 API，见 P0-2/P0-3）。
+ *  - **反射探针**：本文件经反射读 Shizuku（与既有 [ShizukuSupport] 同口径），不参与授权链与
+ *    transport；0.14.0 起直连能力（bindUserService/exec）由 [ShizukuTransport]/[ShizukuUserService]
+ *    承担（gradle 已引 api/provider 13.1.5），本探针继续服务诊断面。
  *  - 不写任何授权状态：Shizuku 授权只能由用户在 Shizuku App 内授予（被提权方不得自改授权）。
  *
  * 错误码与源文档 §9.3 的表一致：`shizuku-absent` / `shizuku-not-running` / `shizuku-denied` /
@@ -92,7 +93,7 @@ object ShizukuProbe {
     }
 
     val granted = runCatching {
-      cls.getMethod("checkSelfPermission").invoke(null) as? Boolean ?: false
+      (cls.getMethod("checkSelfPermission").invoke(null) as? Int) == PackageManager.PERMISSION_GRANTED
     }.getOrDefault(false)
     out.put("granted", granted)
 

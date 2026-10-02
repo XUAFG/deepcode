@@ -1,31 +1,29 @@
 /**
- * Mobile chrome: the phone form's top bar and its drawer mask.
+ * Mobile chrome: the drawer mask (0.14.2 P4).
  *
- * Registered into the frame's `shell.overlay` seat. It owns exactly one
- * control — the sidebar toggle — which is why it exists at all: on a phone the
- * upstream collapsed rail sits off-canvas (mobile-form.css), so the drawer
- * needs one reachable entry, and the composer row stays free of another icon.
+ * Registered into the frame's shell.overlay seat. It used to own the drawer toggle
+ * too, inside a self-drawn 44px band ([data-dsh-mobile-topbar]) above the header;
+ * the user reported that band as wasted vertical space ("这个顶部的额头太大了（标题上方留空）
+ * 挤占屏幕空间"), so the toggle moved into upstream's own header row
+ * (conversation.header.leading, see SidebarToggle.tsx) and this entry keeps only the
+ * mask that covers the frame while the drawer is open.
  *
- * The open state is mirrored from the frame's own `data-sidebar-collapsed`
- * attribute rather than owned here: the rail keeps its own toggle, and the
- * marker may also flip the attribute through rotation. Reading it keeps the
- * mask and `aria-expanded` honest without a second source of truth.
+ * The open state is mirrored from the frame's own data-sidebar-collapsed attribute
+ * rather than owned here: the drawer keeps its own toggle inside, and the marker may
+ * also flip the attribute through rotation. Reading it keeps the mask honest without
+ * a second source of truth.
  */
 import { useEffect, useState } from 'react'
 import type { InjectFace, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import css from './MobileChrome.module.css'
 
-/** Copy (the Android layer's product strings are Chinese; see DevSection/ExportResultDialog). */
-const TOGGLE_OPEN = '打开导航'
-const TOGGLE_CLOSE = '关闭导航'
-
 /** The apply-world callbacks this entry may use. */
 export interface MobileChromeInjected {
-  /** Toggle the frame's left sidebar (upstream `ctx.layout.toggleSidebar`). */
+  /** Toggle the frame's left sidebar (upstream ctx.layout.toggleSidebar). */
   toggleSidebar(): void
 }
 
-/** Full props: the overlay runtime share (session list included) plus the injected toggle. */
+/** Full props: the overlay runtime share plus the injected toggle. */
 export type MobileChromeProps =
   & PropsRuntime<'shell.overlay'>
   & InjectFace<MobileChromeInjected>
@@ -68,9 +66,9 @@ function useSidebarOpen(): boolean {
 }
 
 /**
- * The phone form's top bar with the sidebar toggle, plus the drawer mask.
- * @param props - runtime share (unused) and the injected toggle.
- * @returns the chrome, or the hidden shell when the phone form is off.
+ * The drawer mask for the phone form.
+ * @param props - the injected drawer toggle (used to close on a tap beside the drawer).
+ * @returns the mask, which is inert outside the phone form.
  */
 export function MobileChrome({ toggleSidebar }: MobileChromeProps) {
   const open = useSidebarOpen()
@@ -82,19 +80,6 @@ export function MobileChrome({ toggleSidebar }: MobileChromeProps) {
         data-dsh-mobile-mask=""
         onClick={() => { toggleSidebar() }}
       />
-      <div className={css.bar} data-dsh-mobile-topbar="">
-        <button
-          type="button"
-          className={css.toggle}
-          aria-label={open ? TOGGLE_CLOSE : TOGGLE_OPEN}
-          aria-expanded={open}
-          onClick={() => { toggleSidebar() }}
-        >
-          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
-            <path d="M7 3v12M3 3h12v12H3Z" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-          </svg>
-        </button>
-      </div>
     </div>
   )
 }

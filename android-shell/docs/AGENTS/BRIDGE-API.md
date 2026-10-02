@@ -1,144 +1,48 @@
-# bridge-api.md — 桥与通道说明
+# BRIDGE-API.md — 当前桥与通道说明
 
-> 本文保留历史桥与通道实现索引；旧行号和方法签名需与当前 `AndroidBridge.kt` 及相关控制器核对，不作为全仓开发规则。
+> 桥方法与签名以 AndroidBridge/BackGateBridge/consoleBridge 源码为准，计数由门禁现取；不沿用旧版数量。0.14.3为源码交接，尚未构建/验收；后文版本增量用于历史溯源，当前契约以本节为准。
 
-## 历史开发地图（0.13.x）
+## 1. 信任与线程边界
 
-以下是旧协调仓与壳子仓布局下的维护参考，包含旧版本、命令、路径和验证记录，不是当前首次构建要求。当前开发导航以 [Android 索引](../../AGENTS.md) 为准，依赖以 [依赖登记](DEPENDENCIES.md) 及 Gradle/锁文件为准，首次装配与安全部署见 [FIRST-DEPLOY.md](../../../docs/FIRST-DEPLOY.md)。不要求取得旧协调仓、私有记录、共享签名或历史回执。具体桥方法与权限检查以当前源码为准；修改其契约时同步相关接口说明，不新增一次性更新流水账。
+主WebView只对精确受管引擎origin开放androidBridge与dshBackBridge；匿名BrowserHost网页不挂桥、不注入EngineAuth cookie/token。@JavascriptInterface运行在JavaBridge线程；涉及UI的调用必须marshal主线程且返回真实结算/超时，不把任务已提交写成已完成。bridge不存在、畸形/空回包均结构化拒绝。
 
----
+| 通道 | 当前职责 |
+|---|---|
+| androidBridge | 用户设置/授权、目录选择、活动配置、窄BrowserHost与虚拟屏控制、通知、自检、console入口；AI能力由插件注册。 |
+| dshBackBridge | setAvailable/getBackAvailable层栈信号；原生返回决策不接受网页任意Intent。 |
+| consoleBridge | 仅本地console页面的输入/尺寸/退出等契约，不复用BrowserHost网页桥。 |
+| 壳↔引擎 | 精确受保护Android路由、控制队列、file-incoming与通知$events；本地HTTP/TCP探针NO_PROXY；回包须lossless JSON。 |
+| 插件↔壳 | androidPrivilege与ControlCarrier/ControlPoller；会话权限和native screen范围在执行点复查，不因UI展示值推断授权。 |
 
-## 1. 仓库概览与技术栈
+## 2. 0.14.3 当前增量
 
-- **角色**：DeepSeek Harness 安卓壳应用（包名 `com.dsharnessmobile.shell`）。
-- **职责边界**：只保留安卓平台权能与桥——前台服务、看门狗、WebView、SAF 桥、快照解压与更新、崩溃回退闸门（UndoGate）、ADB 授权原生写面（AdbState）、审计、内置控制台、日志。**AI 可见能力全部来自插件**。
-- **运行时形态**：壳内嵌 Termux 运行时快照（`assets/snapshot.tar.xz` → `files/usr` + `files/home`）；引擎（Node.js `@deepseek-ai/dsh`，基线 0.1.1-rc.2）监听 `127.0.0.1:3080`；WebView 加载引擎 Web UI。
-- **构建链**：minSdk 26 / targetSdk 34 / compileSdk 36；Kotlin 2.0.21；AGP 8.8.2；Java 17。
-- **依赖**：androidx.activity-ktx / core-ktx、commons-compress、xz；Shizuku 零依赖反射（ShizukuSupport.kt，仅探活示例）。
-- **兄弟仓库**（协调仓库下的子目录）：`dsh-shell-termux`（Termux 执行器）、`dsh-client-ui-responsive`（移动 UI 注入层 + F5 消费端）、`dsh-host-web-compat`（页面注入/兼容）、`plugins/`（dsh-android-bridge / -manage / -linux-env / -file-open，协调仓库内）、`vendor/`（dshmarketplace-plugin、dsh-undo-savepoint 固化副本 + PATCHES.md）。
-- **上游** `deepseek-ai/deepseek-harness`（本地 checkout `dsh/`）：只读参考，**零改动**；一切适配以补丁层/插件/壳侧实现。
-- **历史版本状态（当前以 AGENTS.md 与上游集成文档为准）**：**0.13.3 开发中（vc30；引擎 0.1.2-rc.1 overlay + /api 浏览器鉴权 EngineAuth（P0 token 交换/P1 自 mint cookie）+ MuxClient /api/remote.mux $events 流重做 + pi-drift-F1 降级补丁 + withResolvers polyfill（host-web-compat 0.1.9）+ 字体滑杆退役（ui-responsive 0.1.13）+ vendor/dsh-model-sync；W1-W8 代码面全绿，回归与 push/PR 待用户口令）**。0.13.2 已发布**（Release v0.13.2 正式版，versionCode 29，2026-09-05，tag 落 main，15 资产，prerelease=false；详见更新记录表与协调仓 AGENTS.md §1）。0.13.2-preview（28）与 0.13.1（27）被其取代。**0.13.2 含悬浮球 v2.1 全套 + 用户实测三连修（deriveHalo/乐观置忙+bridge 0.1.2 turn_start/吸边同心）+ 快照刷新看门狗闸门（坑 37）**（#118 引擎启动/探活/UndoGate 五项 + 悬浮球 v2 重设计 + v2.1 三窗口/待答卡片/状态模板批 + 设置页全屏（ui-responsive 0.1.12）+ #120 工作区，详见更新记录表）。当前开放跟踪：#115（市场 Phase2，目标 0.13.2）、#120（添加工作区按键不可用——修复批已实施，待发版验证）、#108（数据备份 feature）。
-- **环境无关声明**：本文档适用于任意环境（Windows/WSL/Linux/macOS、有/无真机）开发维护者；环境差异点（WSL、ADB 真机、run-as）已在对应章节标注。
+### 2.1 Root状态、维护与结果
 
-## 2. 构建与验证命令
+rootGrantState返回有效AI授权（raw switch且当前versionCode consent），rootAccessState仅读应用su状态，不触发弹窗。requestRootAccess显式发起有界真实UID检测，不保证管理器弹窗；setRootConsent(false)同时关开关。root Shizuku与显式su授权为替代路径，uid2000不是root。repairRootOwnership立即返回repair-started/repair-running，rootGrantState().ownership轮询结果。
 
-```powershell
-# 一键双 ABI（协调仓库根；快照→注入→门禁→gradle→out/）：
-pwsh -File scripts\build-apk-013.ps1 -Suffix ""          # 产物 out\v<版本>\dsh-mobile-apk-v<ver>-<abi>.apk
-# dev 快速档（单 ABI 缺省 x86_64 + 注入 preset 1；产物仅 dev 装机，禁发布资产）：
-pwsh -File scripts\build-apk-013.ps1 -Fast
-# 快照（Termux 源 + TARGETS 预装（scripts/snapshot-config/preinstall.json）+ licenses + pnpm 装配 + 瘦身 + xz -T0 归档）：
-node scripts\build-snapshot-013.mjs <arm64|x86_64>
-# 插件单测/冒烟：
-node scripts\smoke-bridge.mjs                             # bridge 18 断言
-cd ..\dsh-client-ui-responsive && npm test && npm run build
-cd ..\plugins\dsh-android-<pkg> && npm run build
-```
+ownership包含running/overdue/startedAt/completedAt/elapsedMs/operation/result?/lease?；当前耐久lease未finish即保持pending、completedAt=0，旧result不能覆盖当前UNKNOWN。UID0派发前耐久commit，完整回执才finish；部分已确认helper信封可结算但不报修复成功。timeout/drain/read/cleanup/Binder未知阻止新派发/维护/启动，不fallback重放；同boot应用重启或resetShizuku不清lease，只有同epoch方案真boot变化可解除。详见 [Root维护契约](<dsh-mobile-apk/docs/AGENTS/ROOT-MAINTENANCE.md>)。
 
-**门禁（build-apk-013.ps1 内）**：vendor 统一补丁（scripts/patches/apply-patches.mjs：marketplace A-D + undo E1-E7，registry.json 驱动，勿加 Select-First）→ 快照单 pass 注入（inject-all.py：@dsh-android + 根级插件 + 权威 patch 覆盖一次 tar 流完成，压缩 ×4→×1；DSH_INJECT_PRESET 默认 9 / -Fast 传 1）→ 挂载集⊇注入集（check-patch-mounts.mjs）→ 机密（check-snapshot-secrets.mjs，跨平台替代 .ps1）→ **第三方合规（check-third-party.mjs，GPL 义务）** → elf-check（双模式：快照 node ELF 架构门禁防坑 18 / 单 ELF 遗留）→ 许可资产拷贝（LICENSES → assets/licenses）→ gradle。
+Shizuku v4以追加configuration()回读完整app UID/anchor，AIDL旧transaction不重编号；root执行点查真实UID和有效consent。每个pull/push chunk在RPC紧前复查，回包offsetFact=acknowledged-bytes、partial/noReplay是事实，不表示失败chunk毫无副作用。exec/capture回包保留exitTimedOut/drainTimedOut/cleanupIncomplete/truncated/readError/resultComplete/spoolReady；私有不完整capture不发布路径。
 
-**云端构建（0.13.0 起，宿主=本仓库，自包含）**：`.github/workflows/build-apk.yml`（`workflow_dispatch` 手动，matrix arm64/x86_64）托管整套构建链并只操作本仓库——快照从源重建（`base/` 底座归档为输入，Git LFS）、6 个缺 lib/ 的插件 npm 构建、注入/门禁/gradle 全部云端完成，仅 `upload-artifact` 供本地下载 debug，不出 Release；**不依赖协调库**（私库，GITHUB_TOKEN 无法签出）。`build-apk.mjs` 以 `DSH_APK_DIR=$GITHUB_WORKSPACE` 指向本仓库（gradle 在此）。本地仍在协调库根跑 `pwsh scripts\build-apk-013.ps1`（`scripts/` 前缀）。
+### 2.2 窄browserHostCommand与Session/tab归属
 
-**设备验证链路**（真机 arm64 vivo V2425A `10AF2B0GN0001F2`；模拟器 MuMu x86_64 `127.0.0.1:16416/7555`）：
-- 安装：`adb -s <serial> install -r -t out\v<版本>\...apk`（同签名 debug.keystore；**指纹变更触发 refreshSnapshot 全量重解压（真机 ≈2-4 分钟、模拟器实测 ~8 分钟，勿在解压中杀进程——中途杀进程看门狗会拿半解压运行时拉引擎，见坑 37）**）。
-- 引擎探活：`adb -s <serial> forward tcp:23080 tcp:3080` → `http://127.0.0.1:23080/`。
-- WebView 调试：`adb shell "cat /proc/net/unix | grep webview_devtools"` → `forward tcp:29225 localabstract:webview_devtools_remote_<pid>`（**每次重启 pid 变**）→ CDP ws 连接后 Runtime.evaluate 驱动（例子脚本见 `.deploy-tmp/cdp-*.mjs`；断言注意 input placeholder 不在 innerText 里）。
-- 远程 RPC（测试面）：POST `/api/<method>`，body 必须全信封 `{"type":"client-request","rpcId":"r1","method":"session.list","payload":{}}`；`session.prompt` 拒绝 live 会话（被 UI 打开的）——直接 API 测代理需先用 session.create 建全新会话。
-- **构建前核对 ABI（见坑 18）**：无真机环境用模拟器（MuMu x86_64 `127.0.0.1:16416/7555`），有真机则安装 ABI 匹配的 APK——debug 包默认带 x86_64 快照，覆盖装到 arm64 真机会引擎崩溃。
+browserHostCommand(payloadJson)由MainActivity转交Activity拥有的BrowserHost.command；payload须受长度/词汇/session/uiTabId/tabId约束，action仅status/tabs/open/select/close/back/forward/reload。它不是任意JS、shell或controlExec通道。status/tabs不创建renderer、不抢UI舞台，返回available/profileAvailable/profileReason/session/ownerSessionId/tabs/activeTabId/tabId及每页真实导航状态。
 
-## 3. 环境无关的开发/维护流程（新人先读此节再动手）
+模型controlOp捕获自己的Session/tab（包括modelTabId）供后续main-thread片段/异步回调，校验同一workspace/tab/view/generation，不依赖当时UI焦点。UI bounds/viewport/identity必须指定自己的Session/nativeTab/GUI occurrence，暂切上下文后恢复前台；陈旧hide/HMR detach不能盖掉邻页。identity、viewport、error、refs均per-tab。主状态旧入口为兼容面，不是0.14.3多Session查询真源。
 
-> 本节与协调仓库根 `AGENTS.md` §2-4 对齐，但以壳子仓库为落点；**下列命令均在协调仓库根执行（除非注明「壳内」）**，shell 引用路径用 `scripts/` 前缀。
+BrowserHostProfile在新WebView任何settings、JS、load、attach-root前setProfile并getProfile确认非Default；失败或不支持MULTI_PROFILE即明确拒绝，不回Default。仅验证隔离后允许HTTP/LAN/loopback；3080受保护引擎origin默认仍拒，非profile调用仍拒loopback，匿名engine访问构造开关默认false。file/content/javascript/data/userinfo/未指定/link-local/metadata继续拒、TLS不override；profile拥有cookie/worker策略。limited profile clear不承诺彻底擦除IndexedDB/CacheStorage/worker注册。官方MIT UI、自定义真实tab-menu与native adapter不暴露主桥凭据。
 
-### 3.1 环境矩阵（先对号入座）
+Windows identity的native UA/JS platform/UA-CH分别选择Windows NT/Win32/Windows，UA-CH Chromium版本取实际应用UA优先；metadata不支持或设置失败如实返回未应用，不能声称桌面站点实测通过。
 
-| 组合 | 快照构建（node scripts\build-snapshot-013.mjs） | 打包/门禁（pwsh scripts\build-apk-013.ps1） | 设备验证 |
-|---|---|---|---|
-| Windows + WSL | **必须在 WSL 跑**（Termux 源/依赖闭包需 Linux；见 3.4） | PowerShell 直跑 | ADB 真机 或 MuMu |
-| Windows 无 WSL | **不可本地构建快照**（跳过 3.2 步 2，用已发布快照/CI 产物） | 可 | MuMu（debug 包默认 x86_64 快照可用） |
-| Linux / macOS | 直接跑（无 WSL 层，路径用 `/`） | 直接跑 | ADB 真机（arm64 需匹配快照） |
-| 无真机 | — | — | MuMu x86_64 `127.0.0.1:16416/7555`（装 x86_64 包） |
-| 有真机 arm64 | — | — | vivo V2425A `10AF2B0GN0001F2`（**必须装 arm64 快照包**，坑 18） |
+### 2.3 活动配置桥（#304）
 
-### 3.2 新环境起步流程（克隆 → 首包 → 装机验证）
+exportConfig()/importConfig()/settingsPath()/exportSettingsDocument()现由MainActivity→EngineManager→SnapshotUserData接线，不再挂载legacy ConfigTransfer。settingsPath是当前configurationDocument：已有/已迁移web profile时指向cordis.patch.yml，未迁移且无patch才用legacy settings.yaml；.imported是历史marker，不是导出源，patch缺失不回factory/历史YAML。
 
-1. **取代码**：clone 协调仓库（主分支 `main`）；壳子仓库 `dsh-mobile-apk/` 是**独立 git**（主分支亦 `main`），按需 clone/关联；上游 `dsh/` 只读。
-2. **构建快照**（仅 Windows 需 WSL）：`node scripts\build-snapshot-013.mjs <arm64|x86_64>`——Termux 源装配 + TARGETS 预装 + pnpm + 权威 cordis patch 覆盖 + 瘦身 + 归档（产物 snapshot.tar.xz + snapshot.sha256）。
-3. **一键打包**：`pwsh -File scripts\build-apk-013.ps1 -Suffix ""` → `out\v<版本>\dsh-mobile-apk-v<ver>-<abi>.apk`；门禁失败会中断并提示（清单见第 2 节）。
-4. **ABI 核对（坑 18）**：`aapt dump badging <apk>` 看 native-code，或解快照 tar 读 `usr/bin/node` 的 ELF e_machine（**62=x86_64，183=arm64**）——与目标设备一致再装。
-5. **装机**：真机 `adb -s <serial> install -r -t out\v<版本>\...apk`（同签名 debug.keystore，坑 10）；模拟器 `adb -s 127.0.0.1:16416 install -r -t ...-x86_64.apk`。**首装/指纹变 → refreshSnapshot 全量重解压（真机 ≈2-4 分钟、模拟器 ~8 分钟），勿杀进程（坑 37）**。
-6. **验证**：`adb -s <serial> forward tcp:23080 tcp:3080` → `http://127.0.0.1:23080/`；WebView CDP 与 RPC 信封写法见第 2 节。
+exportConfig返回实际path与可能含provider密钥的共享目录警告hint；importConfig只读exports/config下匹配当前格式的文件、先保存.import-backup再原子替换。旧共享settings.yaml不覆盖已迁移patch；settingsDocumentExport是用户显式公共副本动作，不把private配置目录授予外部app。DirectoryPickerController仍在同名源码文件中承载SAF，未退役。
 
-### 3.3 改动流程规范（改哪个仓库、改完必做三件事）
+页面恢复由ForegroundPageRecoveryPolicy限定前台generation和一次quiet retry/recreate，不把destroyed WebView重新reload；Activity recreation重绑所有holder且保留userClosed/userShutdown，不重启共享引擎。新增fixture仅登记、未执行；详见 [外部测试需求](<docs/0.14.3-TEST-REQUIREMENTS.md>)。
 
-| 改动面 | 落点 | 约束 |
-|---|---|---|
-| 壳层（桥/服务/看门狗/快照/权限） | 壳内 `app/src/main/java/com/dsharnessmobile/shell/` | 提交在壳子仓库独立 git |
-| 快照内容 / assets | 壳内 `app/src/main/assets/` | `snapshot.tar.xz` + `snapshot.sha256` **必须成对换**（坑 18） |
-| 构建链 / 门禁 | 协调根 `scripts/` | 改后跑完整门禁；命令变更须同步本文档 |
-| 安卓能力插件 | 协调根 `plugins/dsh-android-*` | `npm run build` 通过；重装配须「权威 patch 覆盖 + 冷启动」（坑 19） |
-| UI 注入层 | 协调根 `dsh-client-ui-responsive/` | `npm test && npm run build` |
-| 执行器 / 页面兼容 | `dsh-shell-termux/`、`dsh-host-web-compat/` | 装配进快照 |
-| 上游引擎 | 协调根 `dsh/` | **禁改**（只读参考）；一律以补丁/插件/壳侧适配（vendor/ + PATCHES.md） |
-
-**每次改动关闭前必做三件事**：
-1. **文档同步**：本文件描述失真处当场更新 + 文末「更新记录表」登记（时间/版本/内容/更新者）。
-2. **GPL 合规**：新增依赖登记 `scripts/third-party-licenses.json` + `THIRD_PARTY_NOTICES.md`（80 组件矩阵）；copyleft 全文三形态在场（快照 `usr/share/LICENSES/`、仓库 `LICENSES/`、APK `assets/licenses/`）；`check-third-party.mjs` 不过即拒打包（第 7 节）。
-3. **PR 规范**（pr-guidelines）：标题 `<type>: <描述>`（`fix:`/`feat:`/`docs:`/`chore:` 等，type 与主标签一致）；每个 PR 1-3 个标签；破坏性变更 type 后加 `!`。
-- **禁用 emoji**：提交信息、PR 标题/描述、文档一律不使用 emoji（以文字描述代替，如「机密」而非锁形 Emoji）。存量文档中的 emoji 随触碰逐步清除。
-
-### 3.4 环境差异点速查（踩坑对照）
-
-| 差异点 | 现象 / 规则 | 出处 |
-|---|---|---|
-| WSL（Windows 特有） | 快照构建必须在 WSL（tar 解压/符号链接/relocate 需 Linux 语义）；Windows 直读 WSL 9p 文件 = EACCES，校验走 `wsl tar -tvf` 视图；wsl.exe 输出前有 localhost 代理噪音行，解析时过滤 | 坑 6 |
-| ADB 真机特有步骤 | 同签名 debug.keystore 才能覆盖安装；配对走真实 `adb pair`、码值只进 argv（第 4 节 AdbState.kt）；CDP 每次重启 pid 变 | 坑 10/14、第 2/4 节 |
-| run-as 限制 | run-as 裸环境无 termux-exec 钩子 → `not executable: 64-bit ELF` / `CANNOT LINK` 是**假错误**；验证快照内二进制须带全套引擎 env（`LD_PRELOAD` + `TERMUX_EXEC__*` + `LD_LIBRARY_PATH` + `OPENSSL_CONF`） | 坑 22 |
-| PowerShell 转义 | 双引号内 `$var` 本地展开（引号地狱）；二进制经 `adb exec-out`/push 传输 | 坑 8 |
-| ABI 匹配 | debug 包默认 x86_64 快照，装 arm64 真机必崩；构建/安装前核对（3.2 步 4） | 坑 18 |
-
-## 4. 目录与源文件作用（关键函数带代码位置；文件行数随版本变化，以函数名为准）
-
-> **维护者文档（2026-09-05 Phase 4 起，权威登记处）**：`docs/ARCHITECTURE.md`（35 模块地图+依赖方向+assets 结构）/ `docs/BRIDGE-API.md`（桥协议：androidBridge 31 方法+consoleBridge 6+回调通道 8+MuxClient 协议）/ `docs/ANDROID-API-USAGE.md`（android.* 85 类按域分组+API 等级守卫点）/ `docs/DEPENDENCIES.md`（gradle 依赖+升级策略）/ `docs/RUNTIME-PATCHES.md`（assets/patched 六文件登记）。本节保留速查职能，与五文档冲突时以文档（源码 grep 实证）为准。
-
-`app/src/main/java/com/dsharnessmobile/shell/`：
-
-| 文件 | 作用 | 关键点（0.13.0 定稿） |
-|---|---|---|
-| **AdbState.kt** | ADB 授权单一事实来源 + **真实通道**（内嵌 termux android-tools adb 36） | `pairWithCode(code,pairPort,connectPort)`：真执行 `adb pair 127.0.0.1:<port> <code>`（**码值只进 argv**，审计只记 codeLength；配对成功才写 paired+端口）；`revokePair`：disconnect+删 adbkey+清 paired（系统侧授权需无线调试重开才彻底清除——设置页文案说明）；`adbShellExecute` 真实 shell（uid=2000，失败关闭+幂等重连）；prefs 键 allowSwitch/paired/pairPort/connectPort/connected/**fullAccess（门1 live 键，0.13.0 Q8 判定一致化）**；`discoverPorts`：系统属性直读 → **NSD/mDNS（`_adb-tls-pairing._tcp`/`_adb-tls-connect._tcp`，5s 超时）** → 手动硬回退（盲扫已剔）；`runAdb` 用 engine.shellEnv()+OPENSSL_CONF 覆盖（同 UndoGate 修复） |
-| **FileIncoming.kt** | F5 文件直达：校验/净化/拷贝/元数据/清理 | `copyIn` **200MB 有界拷贝**（R17）；`sanitizeName/uniqueName/validate`；`tmpWorkspace=files/home/.dsh/workspaces/incoming`；`cleanupTmp` 生命周期礼仪 |
-| **UndoGate.kt** | 崩溃自动回退（F3）：看门狗连续失败→急救 CLI restore-last-good | `runCli` **必须注入 `OPENSSL_CONF=<usr>/etc/tls/openssl.cnf`**（快照 node 编译期 cnf 路径不可读→无输出→误判无快照）；幂等标记 `.undo-auto-done` |
-| **EngineManager.kt** | 引擎总管：解压/指纹/环境/进程/补丁 | `shellEnv()`：PATH/LD_LIBRARY_PATH/HOME/DSH_HOME/TMPDIR/LD_PRELOAD(+termux-exec force)/TERMUX__PREFIX/SSL_CERT_FILE/DSH_ADB_*/DSH_ADB_FULLACCESS（=壳侧 fullAccess() 同源）/密钥注入；`refreshSnapshot` 指纹差异→备份→重解压→还原用户数据（白名单：sessions/storages/attachments/credentials/settings 等，**profiles 不回灌、跟随快照**）；**`snapshotRefreshing` companion 级闸门（0.13.2-fix 三批）**：刷新期 startEngine 直接跳过——看门狗自愈路径无此闸门时会拿「解压到一半的运行时」拉引擎（实例分属 MainActivity/EngineService，标志必须挂 companion，同 STARTING CAS 道理）；`killExistingEngine`（destroyForcibly+pkill bin.js）；90s 冷却窗探活绕过 |
-| **EngineService.kt** | 前台服务 + 看门狗 | watchdog 5s 探活 + UndoGate 触发 + 唤醒锁续期/释放 + onTaskRemoved 清理（F5 生命礼仪） |
-| **MainActivity.kt** | 主界面/桥接线/意图处理 | `maybeProcessIncoming`（VIEW/SEND→FileIncoming→POST /api/android/file-incoming）；AndroidBridge 接线含 `onSetAdbPair={code,pairPort,connectPort->AdbState.pairWithCode}`；`onRevokeAdbPair`、`onAdbShell` |
-| **AndroidBridge.kt** | `window.androidBridge` 协议 v1 | `setAdbPair(code,pairPort,connectPort):Boolean`（**3 参**）、`getAdbState()`、`adbShell(cmd)`、`requestAllFilesAccess/hasAllFilesAccess`、`pickToken` 鉴权、`openNativePath`（FileProvider 白名单） |
-| **SnapshotExtractor.kt** | tar 解压（x-zip→filesDir、symlink、exec 属性戳印）+ **zip-slip 防护**（resolveEntry 拒绝 .. / 绝对路径 / 越界 symlink） | `extract()` |
-| **UpdateManager.kt** | 在线快照更新（第一版） | usr→usr-old 两步切换 + 指纹写 |
-| **WatchdogV2.kt** | 引擎看门狗（v2） | 连续失败熔断；boot 恢复用户同意状态 |
-| **ShizukuSupport.kt** | Shizuku 反射探活（仅示例；真实通道走 adb 二进制路线，Shizuku 源码作参考存主仓库 .deploy-tmp/shizuku-adb/） | — |
-| **ConsoleActivity/ConsoleSession** | 内置终端 | 环境与引擎一致 |
-| **LogCollector.kt** | 调试日志收集 | 日文件轮转；审计另见 AdbAudit（files/audit/audit.ndjson） |
-| **EngineAuth.kt** | 引擎 /api 浏览器鉴权载体（0.13.3 W2 新增）：P0=engine.log（三代取最新）解析 `dsh web: .../?token=` 行 → GET / 捕 303 Set-Cookie 存 SharedPreferences；P1=读 files/home/.dsh/.credentials.yaml records[client-connection/browser-session] 自 mint cookie（HMAC-SHA256/sha256/base64url 标准件，cookie 名 dsh-auth-+b64url(sha256(authority))，authority=127.0.0.1:3080）；**token/cookie/secret 禁落日志**；handleUnauthorized=invalidate+refresh（401 自愈）；attachMux 供 WS 握手；cookie 跨引擎重启有效（签名密钥持久） |
-| **EngineProbe.kt** | 本地引擎探活（0.13.2-fix 重构；0.13.3 W2 起 401/303 视作 running=alive 防 watchdog 误杀，auth 字段区分 ok/missing）：应用级状态唯一判定源 | `check()` **全链 Proxy.NO_PROXY 直连**（#118：系统代理劫持本地探针实锤——WebView/curl 豁免代理而 HttpURLConnection 走 ProxySelector → 请求发往代理网关恒 timeout）；`portReachable()` TCP 端口级判定（HTTP 未就绪 ≠ 引擎死亡）；error 区分 **timeout（代理吞请求/慢启）vs refused（端口未开=真死）** |
-| **OverlayService.kt** / **OverlayController.kt** | 悬浮球 v2.1（0.13.2-fix 二批；v2 交互在其上重构为**三窗口架构**）：**球窗 34dp**（NOT_FOCUSABLE+NOT_TOUCH_MODAL+ADJUST_NOTHING，尺寸/标志全程不变——互吞与错位根治）；**光环窗 50dp**（NOT_FOCUSABLE+NOT_TOUCHABLE 纯视觉，radial 辉光半径 24dp≤半窗 25dp；**50dp=2×(贴边 margin 8dp+球半径 17dp)——贴边时窗口恰内切屏幕不被 WMS clamp**；旧 64dp 贴边越界 7dp 被 WMS 整窗平移回屏（dumpsys 实锤请求 x=-14→frame x=0）=「吸边后球/光环中心错位 14px」，2026-09-05 三批修）；四态 IDLE 白/WORKING 蓝/PENDING 琥珀/ERROR 红；**面板窗**（独立 focusable TYPE_APPLICATION_OVERLAY+NOT_TOUCH_MODAL，宽 min(屏宽-球-64dp,400dp)，**SOFT_INPUT_ADJUST_PAN**——键盘弹出系统原生上推面板、球不动；非相交 overlay 窗收不到 IME insets 已实测，勿再做自管 insets）；收起=纯黑白球+光环、展开=圆角矩形面板（会话选择器/状态行/输入行同 v2） | 双维状态解耦保留（EngineProbe 探活 + live 流 turn_start/tool_call/turn_end busy 会话感知）；**光环状态派生唯一权威 deriveHalo()**（探活 tick 与事件渲染共用——探活自带判定不带 PENDING 项会每 10s 把待答琥珀盖回白=「必须展开才见黄」，2026-09-05 三批修）；**乐观置忙 markBusyOptimistic**（发送成功/应答提交即亮工作态补 live 空窗——live 流原本无起轮事件，发送到首 tool_call 间壳侧失聪显「空闲」；45s 无 live 事件由探活兜底回退）；**PENDING 审批/提问走 MuxClient WS 下行**（见下行），卡片官方风格：问题卡=题头+加粗题干+编号选项行+✎ 自定义输入+‹n/n› 翻页+跳过/下一题/提交，审批卡=工具+理由+批准一次/拒绝；应答 POST /api/respond 全信封（approval value={sessionId,approvalId,outcome}；question value={sessionId,answer:{answers:[{id,selected[,custom]}]}}——**selected 用选项 label 非 id**、顺序匹配 questions；question 取消发 ok:false error cancelled，approval 无取消通道）；状态文案模板 prefs 化（overlay_display：template_thinking "Deep diving..." / template_tool "{tool} · {summary}"，摘要取 args 命令/路径等键值折叠空白前 24 字符）；拖动 clamp/弹簧用窗口实际宽高（「展开拖动只有光环动」根因=按球径 clamp 致 WMS 重新贴边）；positionPanel 随球同步（右溢出翻左侧）；debug 待答注入：`echo question\|approval\|clear > files/home/.dsh/.overlay-test-pending`（FileObserver 消费，debuggable 门控）；关闭钮独立 ✕ 图标（dsh_ic_close.xml）；引擎页避让帧保留；**文件拆分（2026-09-05 Phase 3c，纯搬移零行为变更，1564→611 行）**：光环维=**OverlayHalo.kt**（Halo 枚举顶层 + drawable/setHalo/syncHalo/deriveHalo）、面板维=**OverlayPanel.kt**（buildUnit 构建/updateBallOnly 渲染/状态模板/待答卡/POST /api/respond 应答；PendingApproval/PendingQuestion 顶层类）、live 流=**OverlayLiveFeed.kt**（FileObserver drainLive 事件分发 + F7 android_* 避让 + .overlay-test-pending debug 注入 + toolSummary）、主题=**OverlayTheme.kt**（色板/明暗）；协作类同包顶层、构造注入服务引用（internal 成员共享状态，无静态单例），**F7/F8/F9 三修行为与关键注释（F8 z 序约定）原样保留** |
-| **MuxClient.kt** | 引擎事件 mux WS 常驻客户端（0.13.2-fix 二批新增） | 手写 WS（Socket 握手 + **SHA-1 Sec-WebSocket-Accept 校验（首版 substring 前缀比较永不匹配致静默失败，实锤）** + 服务器帧解析 + 掩码控制帧 pong/close + 分片续帧缓冲）；0.13.3 W3 重做：连 `ws://127.0.0.1:3080/api/remote.mux`（**握手带 Cookie**=EngineAuth.attachMux；不带 Origin/sec-fetch-site——雷区 5）+ 连上即发 `{type:"open",streamId,endpoint:"$events",payload:{args:{}}}`；服务端 item value = ready（clientId）/ waterfall（approval/request、user-questions/request，eventId+agentId）/ emit（api-session/status args=[agentId,running]）；应答 POST /api/$events/result {clientId,eventId,outcome}（审批=词汇原字符串、提问 selected 数组、跳过=rejected）；指数退避 1s→10s 重连、逐次 Log.w（tag dsh-overlay-mux）；帧回调 OverlayPanel.handleMuxFrame（0.13.2-fix Phase 3c 拆分后落 OverlayPanel.kt，原 OverlayService.handleMuxFrame）增删 pendingApprovals/pendingQuestions 映射（approval/requested|resolved、question/requested|resolved） |
-| **ShimmerTextView.kt** | 官方「Deep diving...」品牌蓝渐变扫光文字（0.13.2-fix 新增） | 复刻官方 ChatView.module.css .turnStatus：LinearGradient shader（D500 #4176E6 / D200 #D3E2FF，宽 2.5W，translate −1.5W→0，1.8s linear infinite）+ ValueAnimator；reduced-motion 三 scale==0 时静态渐变 |
-| **AdbKeyboardService.kt** / **AdbKeyboardReceiver.kt** | 内嵌 ADBKeyboard 协议 IME（0.13.2 W6） | ADB_INPUT_TEXT/CLEAR 广播 → commitText；实例活跃才提交（canCommit） |
-
-`app/src/main/assets/`：`snapshot.tar.xz`、`snapshot.sha256`、`undo-emergency.mjs`（急救 CLI，UndoGate 用）、`licenses/`（LICENSES 标准文本 + THIRD_PARTY_NOTICES.md，GPL 合规 A2）、`console.html`。
-
-## 5. 桥与通道说明
-
-| 层 | 通道 | 语义 |
-|---|---|---|
-| 页面 → 壳 | `window.androidBridge` | ADB 授权变更**唯一**入口（setAdbAllow/setAdbPair/revokeAdbPair——被提权方不得自改授权，Shizuku 对照）；目录/图片 pick（token）；全文件访问；重启/控制台 |
-| 壳 → 引擎 | HTTP 127.0.0.1:3080 | 文件直达 POST；pick 端点；**只读**状态端点（/api/android/privilege/status） |
-| 引擎 → 插件 | cordis 服务面 | androidPrivilege（状态机/execAdbShell/execAdbLine/gateFor 会话级 danger）；dsh-shell-termux 执行器 |
-| 插件 → 页面 | dsh.client 模块 + slots | ui-responsive（AppFrame/DevSection/settings.dev.item/F5 消费端轮询）；bridge client（AdbAuthSection 双端口配对 UI）；undo/marketplace 注册 |
-
-**授权模型（定稿）**：引擎级 = 门1 All Files Access（**live prefs 键 `fullAccess`，壳 syncFullAccess 写入；env DSH_ADB_FULLACCESS 仅兜底**——0.13.0 Q8 不再重启生效）+ 门2 允许开关（live prefs）+ 门3 真实配对（adb pair 握手）；会话级 = `gateFor(exec.agent.session)` 实时 resolve，**ADB 能力（含观察类）仅 danger-full-access**，自动审批不参与；写面唯一在壳侧原生 AdbState（桥/引擎只读 live `dsh-adb.xml`）。
-
----
+## 3. 历史增量（不作为当前构建或验收证据）
 
 ## 0.13.3 W2/W3/W10 桥协议增量
 
@@ -148,63 +52,132 @@ cd ..\plugins\dsh-android-<pkg> && npm run build
 
 ## 语音和性能原生桥（本地 voice-debug）
 
-`voiceStart(id): JSON`、`voiceStatus(): JSON`、`voiceStop(id)`、`voiceCancel(id)`、`voiceAcknowledge(id)`、`voiceRelease()`：请求 ID 绑定当前录音。状态 idle/permission/preparing/recording/transcribing/done/error/canceled。done.text 仅转录结果；前端消费后 acknowledge。页面卸载/退出前台取消活跃任务（授权弹窗除外）。默认本地 Qwen3-ASR-0.6B，原生进程 120 秒空闲卸载。
+- `a11yStatus()`：无障碍控制通道状态 JSON `{enabled,label,sdk,restrictedSettingsApplies,hint,tokenConfigured}`（壳侧 `DeviceControlService.statusJson`）。
+- `openA11ySettings()`：官方 Intent `Settings.ACTION_ACCESSIBILITY_SETTINGS` 跳系统无障碍页（失败回退 `ACTION_SETTINGS` + Toast 引导）。
+- `unlockRestrictedSettings()`：Android 13+ 一键解锁受限设置（`appops set <pkg> ACCESS_RESTRICTED_SETTINGS allow`，**0.14.0 起走 Shizuku 特权 shell**——内置 adb 已退役，旧文写的「壳侧 ADB 通道」是遗留措辞；未授权/未就绪失败关闭，返回 `{ok,message}`）。
+- 引擎侧只读状态端点 `/api/android/privilege/status` 新增 `control:{a11yEnabled,queue,tokenConfigured}` 与工具 `android_privilege_status` 的 `gates`/`control` 字段。
 
-`performanceSample(): JSON`、`performanceReset()`：已移除 cpu 字段及其采样；rssMiB 为同 UID RSS 总和（共享页可能重复统计）；gpu.percent 不可用返回 null 和 reason，不可拿频率替代。不需要 ADB 配对。
+## 0.14.2 增量（Shizuku「重置链接」——P1，2026-09-26）
+
+> 背景：现场报障 —— Shizuku 已授权、通道一度「可创建」，随后跳成「需要准备」，**重新授权与重启 App 均无效**。
+> 「App 重启无效」排除了「进程内标志位脏了」（那会被重启清掉），指向 **Shizuku 侧的 UserService 实例已僵尸化**。
+> 既有 `readyService` 文案早就写着「在设置页「手机控制」重新连接 Shizuku 会重启 UserService（无需重装）」，
+> 但那条路此前**并不存在**。本节是该承诺被真正实现后的桥面增量。
+
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `resetShizukuConnection()` | `AndroidBridge.kt`（`@JavascriptInterface`）→ MainActivity `onResetShizukuConnection` → `ShizukuTransport.resetConnection(context)` | 用户显式「重置链接」。**非阻塞**：本方法在设置页每次点击上同步执行，**绝不 await 新绑定**（与 `kickBind` 同纪律），重置后的收敛交给既有 2s 轮询 + `kickBind`。**写后回读**：返回 `ShizukuTransport.status()` 的 status JSON（`ok/installed/running/granted/bound/binding/bindAttempts/bindAgeMs/lastError/code/guidance`），页面据此如实展示，**不承诺「已修好」**——能否恢复取决于 Shizuku 服务本身是否还在运行 |
+| 同上（承重墙） | — | `ShizukuTransport.resetConnection` | 三件事缺一不可：① 调 `Shizuku.unbindUserService(args(app), connection, remove = true)` 让 Shizuku 管理器**移除**该 UserService（AAR 实现 = `IShizukuService.removeUserService(conn, forRemove = true)`，本仓实测 disassemble 确认），下次绑定重建干净的；**失败不中断**（`runCatching` + `Log.w`）。② 清我们这一侧：`service/connectedAt` 归零、**僵尸 `bindLatch` countDown 并置 null**（留着会让下一次 `ensureBound` 复用一个永不 countDown 的 latch）、`ShizukuBindState.onReset()` 令 `bindingFlag=false` 使下一次 `beginAttempt` 放行。③ `ControlCarrier.invalidateShizukuCache()` 让 caps 的 5s TTL 缓存立即失效 |
+| 同上（新增结构化 code） | `ShizukuBindCodes.RESET` = `shizuku-user-service-reset` | `ShizukuBindState.kt` | 语义边界：既有四个 mutator 描述「一次尝试的结果」，`onReset()` 描述「用户主动放弃当前通道」——它不假装连上也不假装失败，而是回到「尚未发起」的可重试起点，并让 UI 如实说「已重置」而不是「正在建立」 |
+| 同上（页面消费） | — | `dsh-client-ui-responsive` 手机控制「刷新状态」同行新增「重置链接」 | 复用既有 `settleLinkCall` 结算口径，**不新造口径、不新增定时器**（沿用既有 2s 轮询） |
+
+**计数**：`@JavascriptInterface` 方法数一律由 `scripts/check-bridge-symmetry.mjs` 从源码现取，本节不写死数字。
+**门禁面（已更新）**：`check-bridge-symmetry.mjs` 现扫**三个** surface —— `androidBridge`、`backGateBridge`、**`consoleBridge`（0.14.2 新纳入；此前该桥面的方法不在任何门禁面）**。各 surface 的方法与成员数一律由门禁从源码现取（`node scripts/check-bridge-symmetry.mjs` 的输出行），本节不写死。
+
+## 0.14.2-fx-2-root.1 增量（AI root 权限授权开关——issue #262 方案 A，2026-09-30，本地变体）
+
+> 背景：issue #262（feature 登记）——已 root 设备上把设备完全开放给 AI 前需要一个**策略门 + 免责确认门**。
+> 已确证前提：root 能力来自「Shizuku 服务端以 root 启动」（通道身份 uid=0），**开关不授予任何能力**；
+> 探测判据必须用**通道身份**而不是「设备是否 root」（已 root 但 Shizuku 以 ADB 启动 ⇒ 通道只有 uid 2000，置灰）。
+> 审计前置（`ControlAudit` result 三态化）已于 0.14.2 G-7 修复，本增量直接落地。
+
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `rootGrantState()` | AndroidBridge → RootGrant.state | `granted` 是有效授权（raw switch 且当前版本同意）；`channelRoot` 与显式授权的 `rootGranted` 是替代 root 路径；`ownership={running,overdue,startedAt,completedAt,elapsedMs,operation,result?,lease?}` 回读共享维护。未知通道/状态不猜权限。 |
+| 页面 → 壳 | `setRootGranted(on)` | AndroidBridge → RootGrant.setGranted | root Shizuku 或显式 su 授权在场，且当前版本同意有效才允许开启；关闭永远允许。重新同意不自动复活升级前开关。返回真实写后状态与拒绝码；应用 root 检测是独立显式动作。 |
+| 页面 → 壳 | `setRootConsent(on)` | AndroidBridge → `RootGrant.setConsent` | 「已阅读」确认写面。勾选 = 同意并**与 versionCode 绑定**（升级后自动失效需重新确认）；**取消勾选即撤销同意并同时关闭开关**（issue 用户指定语义，不留矛盾态） |
+| 页面 → 壳 | `openRootDisclaimer()` | AndroidBridge → MainActivity `onOpenRootDisclaimer` → `LocalDocs.open` | 免责声明文档通道：APK 内 assets（`docs/root-disclaimer.html`，离线/随版本/不可远端替换）。**不复用 [ExternalLinks]**（其 classify 只允许 https），新开同形本地通道：页面只传 key（固定 `root-disclaimer`），登记表在壳侧 `LocalDocs.kt`。应用内 AlertDialog+WebView 渲染 |
+| 同上（承重墙：策略门） | — | `ShizukuTransport.rootGateRefusal` + `readyService`/`runController` 入口 | 通道 uid==0 且未授权 ⇒ 特权执行面（runShell/pullFile/pushFile/removeRemote/runController）**整体 fail-closed**（code `root-grant-required`）。不做按 op 分类的假隔离（issue 已确证 uid 0 下 shExec 任意 shell，白名单挡不住引号逃逸） |
+| 同上（页面消费） | — | `dsh-client-ui-responsive` 手机控制 Shizuku 区块下方 | 开关 + 「已阅读」复选（带蓝色超链接开免责声明）；非 root 通道：开关置灰 + **红字「无法在未 root 的设备上赋予该权限」**（用户指定文案，逐字） |
+
+**计数**：方法数由 `scripts/check-bridge-symmetry.mjs` 从源码现取（四方法 Kotlin/TS 两侧同批声明，无需登记 kotlinOnly）。
+
+## 0.14.2-fx-2-root.2 增量（应用级 root 授权面 + 属主自愈，2026-09-30，本地变体）
+
+> 背景（主人两问换来）：①「这个开关应该调用一下 root 弹窗，并且检测 root 是否授权，如果没有，请写好引导去 Root 管理器，授予 root」；
+> ②「为什么要弄 shizuku 的事情我们不是做 root 适配吗？」——issue #262 的设计建立在 Shizuku 上（其测试机 su 不可达），
+> 而本机 **su 可用**（KernelSU）⇒ root 能力不该押在「Shizuku 已装+在跑+已授权+服务端为 root」四件事上。
+> 另有一条实测缺陷：**Shizuku 授权请求此前只在后台路径自动发起**，而 `requestPermission` 需要前台 Activity
+> ⇒ 静默失败（管理器「应用管理」列表里根本没有本应用、状态恒 denied，用户没有任何可点的授权入口）。
+
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `rootAccessState()` | AndroidBridge（默认实现钉真源）→ `RootAccess.state` | 应用级 root 授权**纯读**面（**永不触发弹窗**）：`suExists/suPath/state(unknown\|requesting\|granted\|denied\|timeout\|no-su)/uid/granted/requesting/manager{package,label,installed}/guidance` |
+| 页面 → 壳 | `requestRootAccess()` | AndroidBridge → `RootAccess.requestGrant` | **显式检测/请求 root 授权**：后台 `su -c id` 取一次真实身份。★**多数管理器不会因此自动弹授权框**（除 Magisk 外得用户自己打开管理器授予，2026-09-30 主人指正）⇒ 本方法只承诺「取一次真实身份并如实回报」，不承诺弹窗。非阻塞（立即返回 `request-started`，结果靠 2s 轮询收敛）；**幂等**（在飞时不重复起）；25s 有界超时，超时如实回 `timeout`（**不是拒绝**） |
+| 页面 → 壳 | ~~`openRootManager()`~~ **已移除**（2026-09-30 主人指正） | — | **不做「打开 Root 管理器」入口**：各家管理器包名/入口不一（KernelSU / Magisk / APatch 之外还有 SukiSU 等分支，部分 ROM 甚至没有管理器 App）⇒ `getLaunchIntentForPackage` 不保证拿得到入口 ✗；而"能刷 root 的用户自己会开管理器" ✓ ⇒ 改为**诚实引导**（识别到管理器就报它的名字，识别不到就说"你使用的 Root 管理器"）。`rootAccessState` 保留 `manager{package,label,installed}` 只读字段供展示 |
+| 页面 → 壳 | `repairRootOwnership()` | AndroidBridge → RootOwnershipJobs.request | 立即返回 `repair-started`/`repair-running` 与维护状态，不表示已修好；既有 `rootGrantState().ownership` 轮询真实 `result`。固定本应用维护不受 AI 开关约束，无任意命令入口；完整/部分/未知结果分别显示。 |
+| 页面 → 壳 | `requestShizukuPermission()` | AndroidBridge → MainActivity → `ShizukuTransport.requestPermission` | **显式请求 Shizuku 授权**（UI 线程 + 前台 Activity；后台自动请求落不到用户眼前——实测管理器列表里没有本应用）。返回写后回读 status + `requested` |
+| 同上（su 直连） | — | RootAccess.execRoot + ShellOps.canFallbackBeforeDispatch | 仅确知未派发的通道不可用可回退一次，且须有效 AI consent 与 su 授权；root-policy refusal、命令 exit≠0、超时、Binder/派发后结果不明不重跑。AIDL v4 追加 `configuration()=10`，确认完整 app UID/anchor 后才派发；旧/未确认服务拒绝。 |
+| 同上（启动路径） | — | EngineStartFlow / EngineService / GuidePageRenderer | Activity 与前台 Service 的后台 worker 在快照事务恢复、fresh 判定和 Node 启动前调用共享单飞机制；相近启动复用5s内结算，未知结果延后启动，不重复派发。失败相位只在完整结果时报告完成，部分失败与未知明确提示。旧 head 的真机证据不能替代维护者修订后的验收。 |
+
+## 0.14.1 增量（Shizuku 引导面与外部链接通道，2026-09-22）
+
+> 背景：0.14.1 UI 审查发现设置页「手机控制」的 Shizuku 区块**读的是 `vdisplayStatus()`**——
+> 标题写「Shizuku 特权通道」，内容却是虚拟屏状态码与 displayId；而插件下发给模型的引导语是
+> 「到设置页「手机控制」安装、启动并授权 Shizuku」，那一页却一个入口都没有（死循环）。
+> 本节是补上入口之后的桥面增量。
+
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `shizukuStatus()` | AndroidBridge → MainActivity → `ShizukuTransport.kickBind` + `status` | Shizuku 特权通道**真实状态** JSON：`ok/installed/running/granted/bound/binding/bindAttempts/bindAgeMs/lastError/code/guidance`。**读路径自带自愈**（已装+已运行+已授权而未绑定时发起一次后台绑定并立即返回，下一次 2s 轮询收敛；绝不阻塞 UI 轮询路径）。页面的「打开 Shizuku」是否可点由 `installed` 决定——这是「装没装」的唯一事实来源 |
+| 页面 → 壳 | `openShizukuManager()` | AndroidBridge → MainActivity → `ExternalLinks.openShizukuManager` | 拉起 Shizuku 管理器界面（`getLaunchIntentForPackage("moe.shizuku.privileged.api")`，不硬编码 Activity 名）。未安装 → `{"ok":false,"reason":"not-installed"}`；**不做任何隐式安装/授权**（授权只能由用户在 Shizuku 内完成） |
+| 页面 → 壳 | `openExternalLink(key)` | AndroidBridge → MainActivity → `ExternalLinks.open` | 外部链接的唯一出口。`key ∈ {shizuku-download, shizuku-tutorial}`，**URL 表在壳侧 `ExternalLinks.kt`，页面不传 URL**（页面内容按不可信处理，避免把「拉起任意 Intent」的能力交给页面）。两个 key 共用同一条通道。返回 `{ok, reason?}`，reason ∈ `unknown-key` / `insecure-url` / `no-handler` / 异常类名；登记值一律 https |
+| 同上（页面消费） | — | `dsh-client-ui-responsive/src/client/dev-section/phone-control.tsx` | 「下载 Shizuku」与「点击查看教程」→ `openExternalLink`；「打开 Shizuku」→ `openShizukuManager`（未安装时禁用）；受限设置解锁 → `unlockRestrictedSettings`（0.14.1 前该桥方法**零页面调用点**） |
+
+## 0.14.1 增量（通知落点与自检面——批 4，2026-09-22）
+
+> 背景：0.14.1 UI 审查发现整族通知是**单向公告板**——`contentIntent` 一直在写 `dsh.notify.*`
+> extras 而全仓没有读取者、`MainActivity` 连 `onNewIntent` 都没有；同时 `selfCheck` 与两个系统设置
+> 深链在页面侧零调用点（「系统已降级，应用无法调回」这句用户永远看不到）。另外
+> `cat.question` / `cat.approval` 被关掉时通知被**丢弃**，而引擎侧提问/审批**没有超时**
+> ⇒ 任务永久挂起（用户看到的是「AI 不动了」），已改为「静默投递」。
+
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 壳 → 页面 | `window.__dshOpenSession(sessionId): boolean` | `dsh-client-ui-responsive/src/client/mobile/notify-landing.ts`（`apply` 里挂到 window） | 通知落点的**页面半**：切到目标会话。契约 = **同步返回 boolean**（true 已确认切换 / false 未切过去），壳侧 `MainActivity.deliverNotifyRoute` 依 evaluateJavascript 回执给可见提示。判据不做事后无验证的成功声明：未加载的会话先 `open()` 再回头确认 `scope()` |
+| 页面 → 壳 | `notifySelfCheck()` | AndroidBridge（默认实现读 `ShellAppContext`）→ `NotifyCenter.selfCheck` | 每渠道**系统实际状态**（enabled/importance/是否被降级）JSON。默认实现钉在真源上、不依赖 MainActivity 传参（漏接线这一失效形态从结构上消失） |
+| 页面 → 壳 | `openNotifyAppSettings()` | AndroidBridge → MainActivity → `NotifyCenter.appSettingsIntent` | 系统「本应用通知设置」深链；返回 boolean，false = 该 ROM 无此页（页面如实提示，不假装拉起过） |
+| 页面 → 壳 | `openNotifyChannelSettings(channelId)` | AndroidBridge → MainActivity → `NotifyCenter.channelSettingsIntent` | 渠道级深链；channelId 来自 `notifySelfCheck` 回执 |
+| 同上（页面消费） | — | `src/client/dev-section/notify-settings.tsx` | 「通知自检」+「系统通知设置」两枚入口 + 每渠道一行「系统实际状态 + 打开该渠道设置」；五类开关各配一句「关掉会怎样」（提问/授权两类写明「关闭 = 不弹窗，仍可作答」） |
+| 壳侧语义变更 | — | `NotifyCenter.Face.interactive` | 交互类（question/approval）类别关闭 ⇒ **降级为静默渠道**（不弹窗不响铃、仍投递、仍可作答），不再 `return DISABLED`；非交互类（report/todo/silent）才允许丢弃 |
+| 壳侧载荷修正 | `dsh.notify.*` extras | `NotifyCenter.EXTRA_KIND / EXTRA_TARGET_SESSION / EXTRA_TARGET_AGENT` | 旧实现把 `sessionId` 与 `agentId` **依次写进同一个 key**（后写覆盖先写）。现按键语义拆开，读取者 = `MainActivity.consumeNotifyRoute` / `onNewIntent` |
+
+## 0.13.7 增量（追上游 dsh 0.1.5，2026-09-10）
 
 语音状态补充：`waveform[34]` 为真实 PCM 幅度（0..1），`silenceMs`/`silenceLimitMs=5000`、`speechDetected`、`autoStopped`、`capturedMs`、`lastSpeechMs`、裁剪后的 `audioMs`、`vad=webrtc-mode-2`。无语音自动结束返回 error，不调用转录；整段音频提交与输出 SSE 不等于持续音频输入。
 
-波形主显示使用 `waveformSamples[72]`（有符号 PCM，Homerail 实时输入仪表的 6 倍显示增益及 0.24/0.76 时间平滑）；`waveform[34]` 保留为幅度数据。VAD 使用 `VoiceActivityGate` 最近 2 秒 RMS 第 20 百分位的 3 倍作为自适应门槛（0.0003–0.012），并要求连续 60ms 阳性；5 秒无有效人声结束。原始 PCM 不增益。`voiceStatus` 暴露 `inputRms`/`vadThreshold`，debug 的 `desktopVoiceStatus` 同时包含实际输入设备、这两项数值及静音计时；不包含录音或转录正文。极低信噪比仍可能漏检。硬件 Ctrl +/-/0 由 MainActivity 转发 `dsh-content-font-shortcut`（increase/decrease/reset）给响应式字体插件，禁止壳直接设置缩放。
+| 方向 | 方法 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `openPathChooser(path, mode)` | AndroidBridge.kt（新增）→ MainActivity `onOpenPathChooser` → PathOpen.kt `openChooser` | 系统「打开方式」选择器；返回 JSON `{ok, reason?}`（not-exists / not-allowed / no-handler / uri-failed / 异常摘要）。mode=`folder` 视为目录 |
+| 同上（允许面） | — | PathOpen.`isChooserAllowed`（0.13.7 追加） | 允许面 = FileIncoming 的 canonical 白名单（`files/home/.dsh/workspaces`、`files/home/tmp`、`files/usr/bin`、外部存储 `Documents/dshdata/`）**加外部存储根**——上游右栏 Files 标签能浏览整台设备，用户在那里点开的文件/目录必须能交给 MT 管理器或系统文件管理。`file_paths.xml` 相应新增 `<external-path name="external_shared" path="." />`。**引擎/插件驱动**的「文件提及 → 外部阅读器」（`openNativePath` → `FileIncoming.openWithExternalReader`）仍只走严格白名单，不因这条放宽；应用私有区其余部分（含 `.credentials.yaml`）永不进选择器 |
+| 页面 → 壳 | ~~`downloadDebugLogs()`~~ | 已删除（AndroidBridge/MainActivity/DebugLogExporter.kt） | 「导出调试日志」整链退役；日志仍按天落盘（设置页开关不变） |
+| 页面 → 壳 | ~~`pickImage(callbackId)`~~ | 已删除（AndroidBridge/MainActivity/ConfigTransfer 图片桥） | 上游 0.1.5 自带附件入口（回形针 → 系统文件选择器 → 官方上传接口）替代 |
+| 页面 → 壳 | ~~`pickFilePath(callbackId)`~~ | 已删除（AndroidBridge / MainActivity / ConfigTransfer 的 SAF 文档选择链 + 页面 `onFilePicked`） | 0.13.7fx-1 退役：`@` 文件引用回到上游原生菜单（`ui-input-trigger` + `ui-reference`，候选限定在会话工作区内），自建 `@路径` 桥不再需要 |
+| 壳 → 页面 | ~~`window.__dshBridge.onImagePicked`~~ | 已删除（dsh-host-web-compat lib/index.js） | 同上 |
+| 页面 → 壳 | `settingsPath()` | AndroidBridge.kt（新增）→ EngineManager.settingsDocumentPath() | 当前活动配置绝对路径（已迁移时为 web profile 的 `cordis.patch.yml`，未迁移才是 legacy YAML），空串 = 活动文档不存在。移动适配层用它把上游「打开配置文件」（本来走 mac/win/linux 原生编辑器，Android 必然失败，apk #152）改走系统选择器 |
+| 页面（兼容插件） | `window.__dshOpenPath(path, mode)` | dsh-host-web-compat lib/index.js（新增） | 优先 `openPathChooser`，回退旧 `openNativePath`；聊天 mention 与工具行路径点击统一走它 |
 
-### 手柄桥（2026-09-09，本地开发）
+JS interface count is checked from source by `scripts/check-bridge-symmetry.mjs`; do not retain the obsolete 0.13.x count after adding bridge methods.
+`<input type=file>` 的 `onShowFileChooser` 通道保留（上游附件按钮依赖）。
 
-`gamepadLease(epoch: Int, enabled: Boolean)`：页面每 750ms 续租，2.5 秒到期；仅前台受信任引擎页有效。`gamepadStatus(): String`：返回 available/devices，不返回用户会话数据。事件 `dsh-gamepad-input` 的 detail 为 kind、source、deviceId、epoch、seq、button、pressed、repeat、timestampMs；reset 撤销按住状态。语义由插件决定，原生不操作会话。voiceStatus 新增 inputDevice、inputDeviceType、inputDeviceId，表示实际录音路由。
+## 0.14.0 施工增量（部分已随 0.14.0-preview 发布、部分仍未验收）
 
-L2 扩展（2026-09-09）：原生 `KEYCODE_BUTTON_L2=104` 发 `button:l2`，Web 标准按钮索引 6；TS 边沿触发 `sidebar`，Deck 调现有 `ctx.layout.toggleSidebar()`。不改会话绑定或语音状态；宽度变化后保持活动泳道完整可见。
+> 已随 0.14.0-preview（vc38）发布的桥面以 `release/v0.14.0-preview/notes.md` 为准；下表中
+> BrowserHost 与虚拟屏两组方法属**发布后工作区施工**（未提交、未验收），ScreenScope 与
+> file-incoming 已进入发布会话的验收记录。方法计数一律以 `check-bridge-symmetry.mjs` 从源码现取，
+> 本节只登记语义。
 
-○ 扩展（2026-09-09）：`KEYCODE_BUTTON_B=97` → `button:east`；Web 标准索引 1。TS 边沿发送当前草稿，沿用原版 InputBar 提交守卫；不映射通用 BACK/4，不将 ○ 解释为停止 Agent。
+| 方向 | 方法/通道 | 位置 | 说明 |
+|---|---|---|---|
+| 页面 → 壳 | `getScreenScope()` / `setScreenScope(scope)` | AndroidBridge → MainActivity → `ScreenScopePrefs` | 用户设置唯一写面；wire 值仅 `virtual-only`、`real-only`、`all`，未知值回落 `virtual-only`。模型工具没有 setter。设置页落在开发者选项「屏幕与 Shizuku 控制」。 |
+| 页面 → 壳 | `browserHostStatus/show/hide/reload/bounds/viewport/close/identity` | AndroidBridge → MainActivity → `BrowserHost` | Files 右栏的可信页面把 CSS stage bounds 与视口预设传给壳；第二 WebView 只覆盖该 stage（letterbox rect，不做 CSS 缩放），不挂 JavaScript bridge。 |
+| 页面 → 壳 | `vdisplayStatus/create/destroy/launchSettingsProbe/backProbe/bounds` | AndroidBridge → MainActivity → `VdisplayController`/`VdisplayHost` | 建屏/销毁/`am start --display` 探针/`input -d` 回退探针/viewer stage 几何。`virtual-1` 建成前一律 `screen-not-ready`，绝不映射 display 0。 |
+| 页面 → 壳 | `dshBackBridge.setAvailable/getBackAvailable` | BackGateBridge（独立 @JavascriptInterface 对象） | 注入层回传页内层栈可用性；URL 由 Activity 决策，`getBackAvailable` 为只读事实。 |
+| 引擎 → 壳 | `dsh_screen_scope.xml` 只读 | `androidPrivilege.screenScope/screenAccess` | manage 工具在选 a11y/ADB 前读取 native scope；无障碍执行点仍重复检查，防止直连控制队列绕过。 |
+| 壳 ↔ 引擎 ↔ 页面 | file-incoming queue / claim / content / complete / clean | FileIncoming → dsh-android-file-open → ui-responsive | 五条 exact 路由全部受保护；队列状态只给 opaque entry metadata；成功导航后 claim 得进程内 ticket，再经同源 content 读取字节并交给上游 composer 形成未发送 generic file attachment。路径不进入页面或模型，重启不恢复草稿。 |
+| 壳 ↔ 引擎 | 通知应答流 `$events`（streamId=`dsh-notify-responder`） | NotifyBridge ↔ MuxClient | 与悬浮球事件流独立；waterfall 投放通知、cancel 撤通知、`$events/result` 投递回答。 |
 
-## 折叠过渡（本地 2026-09-10）
+`VdisplayController` 已能建真实 VirtualDisplay（公开 `PUBLIC|OWN_CONTENT_ONLY|SUPPORTS_TOUCH`），并把
+别名 `virtual-1` 映射到运行时 displayId；viewer Surface 重挂、实时多屏选择与 BrowserHost 视口的
+设备回归仍未收口（见 `known-gaps.md`）。本节记录代码施工状态，不表示已通过设备验证。
 
-- `foldConfigure(enabled: boolean): void`：主线程开关原生模糊层。插件根据用户开关及 prefers-reduced-motion 设置；卸载插件时关闭。
-- `foldStatus(): string`：线程安全 JSON，enabled/phase/generation/transitions/completed/blurSupported/旧新窗口尺寸；不包含聊天内容。
-- `foldReady(generation: number): void`：插件收到 `dsh-fold-transition` 事件后等待双 rAF，再通知原生等待 WebView visual-state callback；过期 generation 忽略。
-- 事件 detail 为 `{generation,width,height}`，尺寸为 Android 像素，不能用作 CSS dp。UI 按容器宽度排版。无插件响应时原生必须按时清理。
-
-### 折叠续接入口（2026-09-10）
-
-`openFoldSettings()`：打开小米系统“合盖显示设置”，非小米/入口被拒时回退到显示设置。只导航，不写设置、不解锁。`foldStatus()` 增加 hingeAvailable/hingeListening/hingeDegrees/hingeEvents/hingeTransitions/blurRadius/trigger/foreground/pendingResume，用于真实铰链与恢复时序验收。
-
-`setChromeTheme(color, dark)`：只接受 #RRGGBB，主线程更新系统栏颜色/图标、WebView 和容器背景。responsive ThemePresenter 在解析完实际应用主题后调用；不修改 Android 系统主题或用户设置。
-
-折叠增量（2026-09-10）：`foldStatus` 增加 `blurMode=horizontal-gradient`、`blurAmount`、`blurExtent`、`sigmaLeftPx/CenterPx/RightPx`、`shaderError`；`blurSupported` 改为 API 33+ 且无着色器异常，`usedSnapshot` 保留兼容字段但恒 false。`foldPreview(amount: number)` 仅 debug 执行，前台非锁屏且插件启用时调用生产渲染器，最多 4 秒自动清除，用于 GPU 像素验收，不发送消息、不读取会话；release 调用无效果。
-
-诊断增量：`foldDualProbe(boolean)` / `foldDualStatus()` 仅 debug 有效；在应用 UID 验证已从系统配置确认的 lhasa presentation 状态 5，最多 15 秒，后台关闭；报告错误、显示列表、Presentation 状态，不包含会话内容。
-
-`foldDualObserve()` 仅 debug 在已点亮的第二显示屏启动 15 秒只读镜像；不请求显示状态、不借用电脑授权。通过 `foldDualStatus` 的 mirrorShowing/mirrorFrames/mirrorError 读取渲染结果。
-
-`foldSetup()`：打开原生双屏授权引导，仅展示状态并等待用户确认；不直接授权。启用折叠插件首次检测缺授权也会自动显示。通知配对通过非导出的前台服务 PendingIntent 接收用户六位码，不通过 JS/引擎接口。
-
-- Debug `foldProjectionPreview(angle: number)`：0–180° 有限值，在前台未锁屏时用生产外屏投影 renderer 做预览；主屏状态四秒清除，副屏随十五秒上限的 dual observe 清除；仅当 probe 的 clearSourceReady 为 true 时预览内屏投影边界（边界右侧清晰、左侧模糊）。不请求屏幕电源、不写权限、不注入真实传感器。
-
-- Debug dual observe 在外屏为主屏时同样启用有界的 FoldSharedCanvas，关闭观察恢复原宽度；投影预览根据主屏物理角色应用外屏/内屏公式。
-
-### 外屏正文起点查询（2026-09-11）
-
-插件 → 壳查询：`window.__dshNavigationInset(widthCssPx): number`，返回指定画布宽度下侧栏所占的 CSS px（移动抽屉为 0；折叠栏通常为 56）。只描述几何，不修改 DOM 或折叠配置。壳将结果乘 devicePixelRatio 并限制到可裁范围，设置外屏 View translationX；内屏清晰源不含该父级变换。取消了曾经造成内屏手机布局回归的 `__dshPhysicalViewport` 事件与状态。debug dual status 的 coverContentOffsetPx 用于检查裁取与清理。
-
-历史 `secondary-display-enable` 的 leasedState=1 是副屏启用租约；2026-09-11候选已替换为下述 stable-presentation，leasedState=5 是真实系统展示状态。诊断脚本必须按 mode 区分，不能沿用旧字段含义。
-
-
-### Fold 窗口宿主验证（2026-09-11，debug only）
-
-`foldHostPreview(cover: boolean)`：在现有自动 state 5 租约内，覆盖端点宿主选择15秒；true 将同一个 WebView 迁到可交互外屏 Presentation，false接回内屏。不会请求新显示状态或改铰链角度。结束后按真实角度恢复，测试 finally 应调用 false。公开 `foldStatus().dual` 新增 mode=`stable-presentation`、hostReady；primaryCover 表示编辑器宿主，不能当作系统主屏身份。跨宿主必须等待 hostReady，再检查页面连续性、原生窗口焦点和键盘 inset。
-
-### hasHardwareKeyboard（2026-09-11）
-
-`window.androidBridge.hasHardwareKeyboard(): boolean` 为同步只读查询，不要求新权限。每次枚举 Android InputDevice，仅非虚拟、SOURCE_KEYBOARD 且 KEYBOARD_TYPE_ALPHABETIC 设备返回 true；虚拟输入法、游戏手柄与鼠标不计入。工作台以此决定自动聚焦，实际键盘插拔状态实时读取。无此桥的旧 Android 壳默认不自动聚焦；非 Android 网页以桌面精细指针媒体查询作兼容判断。
-
-
-## 2026-09-12 语音引擎诊断补充
-
-`voiceStatus()`新增`engine: kleidiai|compatibility`与`engineReady`，仅诊断字段，不追加聊天标签。debug包`voiceTestSample(id, compatibility)`读取固定debug asset并走原生生产SSE解析；校验前台/空闲/请求ID，不允许任意路径、不启动麦克风、不提交会话。非debug直接拒绝。正式语音默认优化引擎，加载失败或转录进程退出才有限回退，取消不重试。见仓库docs/VOICE-KLEIDIAI-PRODUCTION.md。

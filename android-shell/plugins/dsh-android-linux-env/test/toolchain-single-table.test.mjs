@@ -9,13 +9,21 @@ import { join } from 'node:path'
 import { apply } from '../lib/index.js'
 import { PROBE_BINARIES, REQUIRED_TOOLCHAIN } from '@dsh-android/dsh-shell-termux'
 
-function makeCtx(services) {
+function makeCtx(services = {}) {
   const routes = new Map()
   const tools = []
+  const resolvedServices = {
+    connection: { requestRejection: () => undefined },
+    ...services,
+  }
   const target = {
     tools: { register(t) { tools.push(t) } },
     webServer: { register(route) { routes.set(route.path, route); return () => { routes.delete(route.path) } } },
-    get: (name) => services[name],
+    get: (name) => resolvedServices[name],
+    // 0.14.1 块 E：两条 runtime-cache 路由按「注册即 effect」注册（热重载/卸载必须回收路由，
+    // 不留重复 handler）。桩 ctx 必须提供 effect，否则 apply() 在路由段抛
+    // 「ctx.effect is not a function」——这不是产品缺陷，而是桩缺能力。
+    effect(cb) { cb(); return () => {} },
   }
   return { ctx: target, routes, tools }
 }
@@ -24,7 +32,7 @@ async function callRoute(harness, path) {
   const route = harness.routes.get(path)
   assert.ok(route, '路由必须注册：' + path)
   const res = { code: 0, body: '', headers: {}, writeHead(c, h) { this.code = c; this.headers = h ?? {} }, end(b) { this.body = b ?? '' } }
-  await route.handler({}, res)
+  await route.handler({ method: 'GET', headers: { host: '127.0.0.1:3080' } }, res)
   assert.equal(res.code, 200)
   return JSON.parse(res.body)
 }

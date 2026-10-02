@@ -4,9 +4,9 @@
  * Upstream keeps ownership of the frame, the columns, and both sidebars; this
  * sheet only re-shapes them for a phone:
  * - the left sidebar becomes an off-canvas drawer (its collapsed rail steps
- *   aside with it; the top bar's toggle is the entry, and the rail's own
+ *   aside with it; the header's leading toggle is the entry, and the rail's own
  *   toggle keeps working from inside the drawer);
- * - the centre column spans the whole frame and pads under that top bar;
+ * - the centre column spans the whole frame and pads only under the system inset;
  * - the right column keeps its zero-width track so the upstream panel (already
  *   fullscreen below 768px of frame width) hangs over the centre as a
  *   slide-over, with the system insets respected;
@@ -19,7 +19,6 @@
 export const MOBILE_FORM_CSS: string = `
 :root {
   --dsh-mobile-top-inset: max(env(safe-area-inset-top, 0px), var(--dsh-android-system-top, 0px));
-  --dsh-mobile-topbar-height: 44px;
 }
 
 html:is([data-dsh-mobile-form], [data-dsh-fold-workbench]) {
@@ -50,22 +49,45 @@ html:is([data-dsh-mobile-form], [data-dsh-fold-workbench]) {
   }
 
   /* The settings overlay renders inside the sidebar subtree: a translated
-     (off-canvas) ancestor would carry it off-screen. While any modal outside
-     the frame's own overlay layer is up, the drawer stays on screen. */
-  html[data-dsh-modal-open] [data-dsh-frame] > [class*='sidebarCol'] {
+     (off-canvas) ancestor would carry it off-screen (a transformed ancestor
+     becomes the containing block of its fixed-position descendants). The
+     drawer therefore stays on screen while the settings panel is up.
+
+     Only the settings panel may pin it. Keying this on the coarse
+     data-dsh-modal-open attribute flattened the drawer for every body-level
+     aria-modal dialog (session rename, permission risk confirmation, image
+     lightbox). data-dsh-settings-open is the settings-only fact published on
+     the root by form-marker.ts, so this stays a plain ancestor match with no
+     :has() requirement. */
+  html[data-dsh-settings-open] [data-dsh-frame] > [class*='sidebarCol'] {
     transform: none;
   }
 
+  /* Both in-flow columns take the explicit first row. The frame's track widths
+     are inline styles and upstream declares a single 100% row; a right column
+     left on auto-placement lands in an implicit second row (0px tall) and the
+     frame's overflow:hidden clips the whole right panel -- toggle, tabs and
+     corner expand key included -- out of the viewport. The centre column joins
+     it so no second row is materialised at all. */
   [data-dsh-frame] > [class*='centerCol'] {
     grid-column: 1 / -1;
-    padding-top: calc(var(--dsh-mobile-topbar-height) + var(--dsh-mobile-top-inset, 0px));
+    grid-row: 1;
+    /* 0.14.2 P4: the self-drawn 44px top bar is gone (the drawer toggle now sits in
+       upstream's own header row), so the centre column no longer reserves a band
+       above the header -- only the system/safe-area top inset. */
+    padding-top: var(--dsh-mobile-top-inset, 0px);
   }
 
   [data-dsh-frame] > [class*='rightbarCol'] {
     grid-column: 3;
+    grid-row: 1;
   }
 
-  [data-dsh-frame] [class*='handle'] {
+  /* Anchored on upstream's own attribute: CSS attribute-substring matching is
+     case-sensitive and the real class is widthHandle (capital H), so a
+     [class*=handle] selector matches nothing and the desktop drag handles
+     stayed live on a phone. */
+  [data-dsh-frame] [data-width-handle] {
     display: none;
   }
 

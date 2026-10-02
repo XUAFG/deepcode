@@ -23,7 +23,28 @@ export interface ControlRequest {
   createdAt: number
 }
 
-export type ControlResult = { ok: true; data: unknown } | { ok: false; error: string }
+/**
+ * 一次控制 op 的结果。失败分支可携带**结构化指引**（SPEC §4.2）。
+ *
+ * 为什么失败要带字段而不是只给一句 error：模型按返回决定下一步。只给一句话（例如
+ * 「无障碍未开启」）模型就停在原地或去改无关设置；带上 `actionMode:'coordinate'` + `guidance`
+ * 它就能在同一轮改用坐标路径继续把任务做完。**错误的引导比缺失信息更糟**，所以这里
+ * 把「通道受限」明确表达成一种可操作的模式，而不是一句终止性报错。
+ */
+export type ControlResult =
+  | { ok: true; data: unknown }
+  | {
+    ok: false
+    error: string
+    /** 该 op 在受限通道下的替代动作模式（目前只有 coordinate）。 */
+    actionMode?: string
+    /** 目标屏幕别名（便于模型把后续坐标操作收敛到同一屏）。 */
+    screenId?: string
+    /** 可直接照做的下一步。 */
+    guidance?: string
+    /** 便捷标记：本次失败属于「通道受限、可改坐标」而非真故障。 */
+    coordinate?: boolean
+  }
 
 interface PendingEntry {
   req: ControlRequest

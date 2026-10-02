@@ -22,3 +22,14 @@
 ## 0.13.3 增量
 
 - ADB 工具链语义（android_ui_dump/click/scroll/input + ADBKeyboard IME）不在本仓——见协调仓 plugins/dsh-android-manage 与 bridge 插件。
+
+## 0.14.0 方向（U-4：Shizuku 硬切换，ADB 转迁移/诊断面）
+
+- 用户拍板：正式特权 transport = **Shizuku**（`ShizukuTransport` + `ShizukuUserService`，api/provider 13.1.5），
+  不保留自跑无线调试 ADB 框架作为正式兜底；被替换的是本文件描述的三道人门通道。
+- 现状：ADB 链路代码仍在（`AdbState.kt`，含配对/端口发现/审计；设置页「设备控制授权」下方的
+  ADB 高级/脚本面），定位改为**迁移与诊断**；待 Shizuku 全链设备实测通过后按 U-4 退役。
+- 过渡期注意：`ControlPolicy` 的 ADB fallback 仍会执行 ADB 观察/动作——**开放屏幕范围（ScreenScope）
+  必须在执行点复查**（坑 96），不能只靠页面设置。
+- Shizuku 侧没有「配对」概念：授权由用户在 Shizuku App 内授予，壳侧只做标准请求与状态读；
+  端口发现/配对码/`adb pair` 等本文件机制不应带入 Shizuku 路径。

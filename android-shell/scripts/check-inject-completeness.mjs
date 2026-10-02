@@ -15,6 +15,7 @@
 // 用法：node scripts/check-inject-completeness.mjs <injected.tar.xz> [--profiles web,headless]
 // 退出码：0 = 通过；1 = 成员缺失/导入悬空/残留；2 = 用法或 tar 不可读。
 import { existsSync, readFileSync, readdirSync, statSync, mkdtempSync, rmSync } from 'node:fs'
+import { TAR } from './lib/shell.mjs'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
@@ -57,7 +58,7 @@ const sourceMembers = (dir) => {
 }
 
 let listing = ''
-try { listing = execFileSync('tar', ['-tf', tar], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }) } catch (e) {
+try { listing = execFileSync(TAR, ['-tf', tar], { encoding: 'utf8', maxBuffer: 512 * 1024 * 1024 }) } catch (e) {
   console.error('CHECK-INJECT-COMPLETENESS FAILED：tar 不可读（' + e.message + '）')
   process.exit(2)
 }
@@ -77,7 +78,7 @@ for (const profile of PROFILES) {
   }
 }
 try {
-  execFileSync('tar', ['-xf', tar, '-C', scratch, '--', ...extractArgs], { stdio: ['ignore', 'ignore', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
+  execFileSync(TAR, ['-xf', tar, '-C', scratch, '--', ...extractArgs], { stdio: ['ignore', 'ignore', 'ignore'], maxBuffer: 64 * 1024 * 1024 })
 } catch { /* 缺席成员按缺失处理（后续断言会报），不在此处中断 */ }
 
 let checkedPkgs = 0

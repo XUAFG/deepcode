@@ -48,6 +48,33 @@ const invokedIn = (rel) => {
   // 兼容两种写法：'check-x.mjs'（node 侧数组/helper）与 "scripts\check-x.mjs"（PowerShell 调用）。
   return [...new Set([...text.matchAll(/["'\\/](check-[a-z0-9-]+\.mjs|elf-check\.mjs)/g)].map((m) => m[1]))]
 }
+/**
+ * 执行点解析（0.14.2 实修）：只认「真的会 spawn 这个门禁」的写法，不认声明数组里的字符串字面量。
+ *
+ * 为什么必须与 invokedIn() 分开：上面那个宽松正则会把 GATE_SCRIPTS 声明数组里的 'check-x.mjs'
+ * 也算成「调用过」，于是下面「调用声明集合的每一项」这条断言对 build-apk.mjs **自我满足**——
+ * 声明了却没接线照样判绿。本轮实测：build-apk.mjs 声明 37 项、真实执行 36 项，差的正是新加的
+ * check-dead-tokens.mjs（只登记未接线），而旧断言 PASSED。修法 = 反向断言必须建立在「执行点」之上，
+ * 而不是「文件里出现过这个名字」。
+ *
+ * 形态只取本仓两条链的实际写法，不做泛化猜测：
+ *   - build-apk.mjs（node）：gate('check-x.mjs') 调用点（数组字面量没有 gate(...) 包裹，天然排除）
+ *   - build-apk-013.ps1（pwsh）：行首（可带 $var =）node ... scripts\check-x.mjs，跳过注释行
+ * 反向断言**只针对 GATE_SCRIPTS 声明清单项**；两条链上另有若干在条件分支内调用的门禁
+ * （elf-check / runtime-assets / file-modes / 逐 ABI 段等），不属声明清单，一律不纳入，
+ * 避免把合法的分支调用误判成未接线。
+ */
+const executionSites = (rel) => {
+  const text = readIf(rel)
+  if (text === null) return null
+  const out = new Set()
+  if (rel.endsWith('.mjs')) {
+    for (const m of text.matchAll(/gate\(\s*['"]([a-z0-9-]+\.mjs|elf-check\.mjs)['"]\s*\)/g)) out.add(m[1])
+  } else {
+    for (const m of text.matchAll(/^\s*(?:\$\w+\s*=\s*)?node\s+[^\n]*?scripts[\\/](check-[a-z0-9-]+\.mjs|elf-check\.mjs)/gm)) out.add(m[1])
+  }
+  return out
+}
 const CHAINS = ['scripts/build-apk-013.ps1', 'dsh-mobile-apk/scripts/build-apk.mjs']
 const declaredSet = new Set(declared)
 for (const rel of CHAINS) {
@@ -60,10 +87,28 @@ for (const rel of CHAINS) {
   if (extras.length > 0) console.log('WARN  ' + rel + ' 另有声明集合外的长驻门禁（既有面）: ' + extras.join(', '))
   const notInvoked = declared.filter((g) => !invoked.includes(g))
   check(rel + ' 调用声明集合的每一项（' + declared.length + ' 项）', notInvoked.length === 0, '未接线: ' + notInvoked.join(', '))
+  // ── 反向断言（0.14.2 实修）：声明集合每一项都必须在**执行点**被真实调用 ──────────────────
+  // 旧断言只做「被调用的 ⊆ 声明的」，抓不到「声明了却没接线」；而 invokedIn() 的宽松正则又会把声明
+  // 数组本身当成调用证据，使该断言对 build-apk.mjs 恒真。此处改用 executionSites()，两个方向都堵。
+  const exec = executionSites(rel)
+  if (exec === null) { check('执行点可解析: ' + rel, false); continue }
+  const declaredButNotExecuted = declared.filter((g) => !exec.has(g))
+  check(rel + ' 声明集合每一项都有真实执行点（反向断言，' + declared.length + ' 项）',
+    declaredButNotExecuted.length === 0,
+    '只登记未接线: ' + declaredButNotExecuted.join(', '))
 }
 
 // ── 2. SKIP 纪律（逐脚本静态审计）───────────────────────────────────────────
-const gateFiles = readdirSync(SCRIPTS).filter((f) => f.startsWith('check-') && f.endsWith('.mjs')).sort()
+// 递归覆盖 scripts/ 全树（原先只列顶层）：来源审计链的 check-*.mjs 全部在 scripts/source-build/，
+// 旧实现下它们不在审计面内——将来新增一道「拿不到产物就 SKIP」的来源链门禁，其未计数的 SKIP
+// 不会被抓，发布链 SKIP=0 的口径对来源面也就失效。返回相对 SCRIPTS 的路径（便于报出子目录）。
+const collectGateFiles = (dir, prefix = '') => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+  if (entry.name === 'node_modules' || entry.name.startsWith('.')) return []
+  const rel = prefix ? prefix + '/' + entry.name : entry.name
+  if (entry.isDirectory()) return collectGateFiles(join(dir, entry.name), rel)
+  return entry.name.startsWith('check-') && entry.name.endsWith('.mjs') ? [rel] : []
+})
+const gateFiles = collectGateFiles(SCRIPTS).sort()
 const skipAudit = []
 for (const file of gateFiles) {
   const text = readFileSync(join(SCRIPTS, file), 'utf8')

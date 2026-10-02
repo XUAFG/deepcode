@@ -15,11 +15,36 @@ import java.io.File
  */
 class ConsoleSession(private val context: Context) {
 
+  /**
+   * 控制台会话的状态（S1-18）。
+   *
+   * 为什么要有这个枚举：旧实现只把**文案**推给页面（`onStatus("bash 已启动（快照 Termux 环境）")`），
+   * 页面于是靠对文案做子串正则判就绪（`/已启动/`、`/退出|失败|缺失/`）。措辞一改，判据就静默错判
+   * （页面永远停在「启动中」、输入框永久禁用，而壳侧一切正常）。现在状态是显式契约，文案只用于显示。
+   *  `wire` 是与页面共享的字符串，**改名即与页面失配**（有测试钉住）。
+   */
+  enum class State(val wire: String) {
+    /** 正在拉起 bash。 */
+    STARTING("starting"),
+
+    /** bash 已就绪，可执行命令。 */
+    READY("ready"),
+
+    /** 拉起失败（exec 被拒、环境异常…）——重连**有意义**。 */
+    FAILED("failed"),
+
+    /** bash 已退出（含退出码）。 */
+    EXITED("exited"),
+
+    /** 快照里的 bash 不存在——重连**必然同样失败**（S1-16），页面据此把按钮换成「返回应用」。 */
+    MISSING("missing"),
+  }
+
   interface Listener {
     /** Output chunk (\r collapsed, bell ignored); callback on any thread. */
     fun onOutput(text: String)
-    /** Status text (startup/exit); callback on any thread. */
-    fun onStatus(text: String)
+    /** 状态（显式枚举 + 面向用户的文案）；callback on any thread。 */
+    fun onStatus(state: State, text: String)
     /** bash process exit code. */
     fun onExit(code: Int)
   }
@@ -33,7 +58,10 @@ class ConsoleSession(private val context: Context) {
     val engineManager = EngineManager(context, EngineManager.ensurePickToken())
     val bash = File(engineManager.usrDir, "bin/bash")
     if (!bash.exists()) {
-      listener.onStatus("快照缺失（usr/bin/bash 不存在），无法打开控制台")
+      // P3-6：快照内的相对路径不上屏（用户看不懂 `usr/bin/bash`，也做不了什么）——
+      // 正文说清「缺什么组件、能不能重试」，路径进日志。
+      Log.w(TAG, "console unavailable: bash missing at " + bash.absolutePath)
+      listener.onStatus(State.MISSING, "运行时缺少命令行组件（快照不完整），无法打开控制台——请重新安装应用或重装运行时快照")
       return false
     }
     // Exec-bit fallback: some devices/filesystems lose the exec bit after extraction (execve → EACCES,
@@ -100,11 +128,11 @@ class ConsoleSession(private val context: Context) {
       }
       reader.isDaemon = true
       reader.start()
-      listener.onStatus("bash 已启动（快照 Termux 环境）")
+      listener.onStatus(State.READY, "bash 已就绪（快照 Termux 环境）")
       true
     } catch (t: Throwable) {
       LogCollector.log(TAG, "console start FAILED: " + (t.message ?: t.javaClass.simpleName))
-      listener.onStatus("控制台启动失败：" + (t.message ?: t.javaClass.simpleName))
+      listener.onStatus(State.FAILED, "控制台启动失败：" + (t.message ?: t.javaClass.simpleName))
       false
     }
   }

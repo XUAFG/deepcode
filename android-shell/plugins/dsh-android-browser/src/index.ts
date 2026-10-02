@@ -101,6 +101,20 @@ export function currentControlToken(env: NodeJS.ProcessEnv = process.env): strin
  * @returns undefined = 放行；否则应写的拒绝结果（403 body 恒为空串）。
  */
 export function authorizeIncomingRoute(req: RouteRequestLike, options: AuthOptions): { code: 401 | 403; body: string } | undefined {
+  const provided = authHeaderOf(req.headers, CONTROL_TOKEN_HEADER)
+  const connection = options.connection
+  if (connection !== undefined) {
+    try {
+      const rejection = connection.requestRejection(req)
+      if (rejection === undefined) return undefined
+      if (rejection === 403) return { code: 403, body: '' }
+      return tokenMatches(options.token(), provided)
+        ? undefined
+        : { code: 401, body: JSON.stringify({ ok: false, error: 'unauthorized' }) }
+    } catch {
+      return { code: 401, body: JSON.stringify({ ok: false, error: 'unauthorized' }) }
+    }
+  }
   const host = authHeaderOf(req.headers, 'host')?.trim().toLowerCase()
   if (host === undefined || !TRUSTED_HOSTS.includes(host)) return { code: 403, body: '' }
   if (authHeaderOf(req.headers, 'sec-fetch-site')?.toLowerCase() === 'cross-site') return { code: 403, body: '' }
@@ -108,15 +122,16 @@ export function authorizeIncomingRoute(req: RouteRequestLike, options: AuthOptio
   if (origin !== undefined && origin !== '' && !TRUSTED_HOSTS.some((h) => origin.toLowerCase() === 'http://' + h)) {
     return { code: 403, body: '' }
   }
-  if (tokenMatches(options.token(), authHeaderOf(req.headers, CONTROL_TOKEN_HEADER))) return undefined
-  const connection = options.connection
-  if (connection === undefined) return { code: 401, body: JSON.stringify({ ok: false, error: 'unauthorized' }) }
-  const rejection = connection.requestRejection(req)
-  if (rejection === undefined) return undefined
-  return { code: rejection, body: '' }
+  return tokenMatches(options.token(), provided)
+    ? undefined
+    : { code: 401, body: JSON.stringify({ ok: false, error: 'unauthorized' }) }
 }
 // ── 鉴权段结束 ────────────────────────────────────────────────────────────
 import { MEASURED_DEVICE_BASELINE, resolveBrowserTier, type BrowserFacts, type BrowserTierReport } from './tier.js'
+import { browserTools, resetBrowserMemory, type BrowserControlFace } from './tools.js'
+
+export { browserTools, resetBrowserMemory } from './tools.js'
+export type { BrowserControlFace } from './tools.js'
 
 export const name = 'dsh-android-browser'
 export const inject = ['tools', 'webServer'] as const
@@ -259,7 +274,12 @@ let ctxRef: Context | undefined
 export function apply(ctx: Context, _config: Record<string, unknown> = {}): void {
   ctxRef = ctx
   factsCacheReset()
+  resetBrowserMemory()
   for (const t of tools()) (ctx.tools as unknown as { register(tool: unknown): void }).register(t)
+  // 动作工具面（0.14.0 批）：契约里的 browser_* 全部落地，经同一控制队列调壳侧 browser* op。
+  for (const t of browserTools(() => bridgeFace() as BrowserControlFace | undefined)) {
+    (ctx.tools as unknown as { register(tool: unknown): void }).register(t)
+  }
 
   const wsvc = (ctx as unknown as { webServer?: { register(r: unknown): () => void } }).webServer
   if (wsvc === undefined) return

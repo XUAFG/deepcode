@@ -12,18 +12,26 @@
 // ② 把打过补丁的两个函数逐字抽出、注入 rename 失败桩，断言占位被回收且下一次发布成功；
 // ③ 断言并发输家得到 EEXIST 且**不覆盖**赢家字节。
 //
-// 用法：node scripts/patches/tests/publish-exclusive-reclaim.test.mjs
+// `--asset <file>`（review C1 新增）：跳过补丁施加，直接对**运行时资产正文本体**跑同一组行为断言
+// （0.14.0-preview 的坏资产格式在旧用例下全绿——只测合成补丁输出，测不到已分叉的资产）。
+//
+// 用法：node scripts/patches/tests/publish-exclusive-reclaim.test.mjs [--asset <asset.js>]
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, existsSync, statSync } from 'node:fs'
 import { open as realOpen, unlink as realUnlink, rename as realRename, rm as realRm, mkdir as realMkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { versionedFixture } from './lib/fixture.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..', '..', '..')
 const TARGET = 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js'
-const FIXTURE = join(here, 'fixtures', 'dsh-session-persistence-jsonl-0.1.5-rc.1', 'lib', 'index.js')
+const FIXTURE = versionedFixture('dsh-session-persistence-jsonl', 'lib', 'index.js')
+const assetIdx = process.argv.indexOf('--asset')
+const ASSET = assetIdx >= 0 ? process.argv[assetIdx + 1] : null
+// F7 v1 双占位形态（0.14.0-preview 坏资产）：publish 站内联 open("wx") 后又调 helper → 恒 EEXIST → 恒 false。
+const LEGACY_INLINE = 'const claim = await open(currentPath, "wx");'
 
 const failures = []
 /** Assert one condition, recording the failure instead of throwing so every check reports. */
@@ -51,24 +59,35 @@ const ASSET = join(repoRoot, 'app/src/main/assets/patched/session-persistence-js
 for (const source of process.env.DSH_PUBLISH_TEST_SOURCE ? [process.env.DSH_PUBLISH_TEST_SOURCE] : [FIXTURE, ASSET]) {
 const scratch = mkdtempSync(join(tmpdir(), 'f7-test-'))
 try {
-  const target = join(scratch, TARGET)
-  mkdirSync(dirname(target), { recursive: true })
-  // FX-E19：fixture 索引 LF 而工作树在 core.autocrlf=true 下是 CRLF——按 LF 归一后写夹具。
-  writeFileSync(target, readFileSync(source, 'utf8').replace(/\r\n/g, '\n'))
+  let patched
+  let parseTarget
+  if (ASSET) {
+    // 资产本体模式（review C1）：不施加补丁，直接审被 APK 内嵌、启动时覆盖运行树的那份字节。
+    patched = readFileSync(ASSET, 'utf8')
+    parseTarget = ASSET
+    check('资产模式：直接对资产正文本体运行', true)
+  } else {
+    const target = join(scratch, TARGET)
+    mkdirSync(dirname(target), { recursive: true })
+    // FX-E19：fixture 索引 LF 而工作树在 core.autocrlf=true 下是 CRLF——按 LF 归一后写夹具。
+    writeFileSync(target, readFileSync(FIXTURE, 'utf8').replace(/\r\n/g, '\n'))
 
-  const applied = spawnSync(process.execPath,
-    [join(repoRoot, 'scripts', 'patches', 'apply-patches.mjs'), scratch, '--apply', '--scope', 'engine',
-      '--only', 'spj-migration-link-F5,publish-exclusive-F7'],
-    { encoding: 'utf8' })
-  check('apply-patches (F5+F7) exits 0', applied.status === 0,
-    (applied.stderr || '').trim().split('\n').slice(-3).join(' '))
-  const patched = readFileSync(target, 'utf8')
-  if (source === ASSET) check('shipped runtime asset already repaired', patched === readFileSync(ASSET, 'utf8').replace(/\r\n/g, '\n'))
+    const applied = spawnSync(process.execPath,
+      [join(repoRoot, 'scripts', 'patches', 'apply-patches.mjs'), scratch, '--apply', '--scope', 'engine',
+        '--only', 'spj-migration-link-F5,publish-exclusive-F7'],
+      { encoding: 'utf8' })
+    check('apply-patches (F5+F7) exits 0', applied.status === 0,
+      (applied.stderr || '').trim().split('\n').slice(-3).join(' '))
+    patched = readFileSync(target, 'utf8')
+    parseTarget = target
+  }
 
   // ── ① 补丁面断言 ──────────────────────────────────────────────────────────
   check('F5 两站回退 marker 未被回归', (patched.match(/dsh-mobile link->rename fallback/g) || []).length === 2)
   check('publish 站 marker 在场', patched.includes('dsh-mobile exclusive publish (F7)'))
   check('materialize 站 marker 在场', patched.includes('dsh-mobile exclusive materialize (F7)'))
+  // review C1：v1 双占位形态（内联占位 + helper 占位并存）必须判红——它在旧用例下全绿但恒失败。
+  check('无旧内联占位残留（0.14.0-preview 坏资产形态判红）', !patched.includes(LEGACY_INLINE))
   check('unlink 已导入（回收占位用）', patched.includes('truncate, unlink } from "node:fs/promises"'))
   check('O_EXCL 占位抽成模块级小函数', patched.includes('async function dshMobileClaimExclusive(targetPath) {'))
   check('失败回收抽成模块级小函数', patched.includes('async function dshMobileReleaseClaim(targetPath) {'))
@@ -81,7 +100,7 @@ try {
   check('独占前提注释写明 flock-android-F3 stub 的后果',
     patched.includes('flock-android-F3 stubbing the writer lock out on Android'))
 
-  const parse = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' })
+  const parse = spawnSync(process.execPath, ['--check', parseTarget], { encoding: 'utf8' })
   check('patched file parses', parse.status === 0, (parse.stderr || '').split('\n')[0])
 
   const publishSrc = extractFunction(patched, 'async function publishCurrentExclusive(')
@@ -99,6 +118,15 @@ try {
     'isEEXIST', 'syncDirectory', 'dirname', 'rename', 'open', 'unlink',
     [claimSrc, releaseSrc, publishSrc, 'return publishCurrentExclusive;'].join('\n'),
   )(isEEXIST, async () => {}, dirnameOf, renameImpl, openImpl, realUnlink)
+
+  // review C1 行为判据：干净目标上的首次发布必须成功（v1 双占位形态在这里恒 return false——
+  // 内联 open 先建成 0 字节目标，helper 占位对同一路径必得 EEXIST，且毒占位永久残留）。
+  const happyStaged = join(scratch, 'happy-staged')
+  const happyCurrent = join(scratch, 'happy-current')
+  writeFileSync(happyStaged, 'happy-payload')
+  const happy = await publishFactory(async (from, to) => { await realRename(from, to) })(happyStaged, happyCurrent, internals())
+  check('首次发布 return true（v1 双占位形态此处恒 false）', happy === true, 'return=' + happy)
+  check('首次发布目标内容正确', existsSync(happyCurrent) && readFileSync(happyCurrent, 'utf8') === 'happy-payload')
 
   const staged = join(scratch, 'staged-payload')
   const current = join(scratch, 'current-publish')

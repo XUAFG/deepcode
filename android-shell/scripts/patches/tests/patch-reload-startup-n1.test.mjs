@@ -1,107 +1,51 @@
-// patch-reload-startup-n1.test.mjs — N1 补丁回归：patchReload=startup 出厂默认 + 存量升级归一化。
+// patch-reload-startup-n1.test.mjs — N1 撤销不变量（0.14.2）。
 //
-// 背景（性能 A1，docs/ANDROID-RUNTIME-PERF-2026-09-12.md §A1，实测冷启动 24.9s -> 16.6s）：
-// Android 上 live patch reload 不可用（坑 19），却让引擎额外挂 timer/hmr 并反复现场重算客户端
-// combo。修法两处：① web 模板默认 live -> startup（全新安装与键缺失的升级用户）；
-// ② normalizeShippedProfile 在 installation-owned 元组下把已显式写入的旧默认 live 一并归一化
-// （上游只在键**缺失**时写回模板默认，存量设备永不归一化 —— P-AC-24）。
+// 这里**不再**测 N1 补丁本身：0.1.7-rc.1 上游把 patchReload 整个机制删了（全仓 `patchReload` 零命中），
+// live reload 的收益改由结构提供——`dsh-client-hmr` 常驻但无 dev watcher 时空转
+// （上游 packages/bundle/web-app/cordis.patch.yml 自述）。补丁与 P-AC-23/24 随之撤销。
 //
-// 本测试：① 对只读 fixture 跑 apply-patches（幂等 + 可解析 + marker 数 = 2）；
-// ② 断言 web 模板已改；③ 把打过补丁的 normalizeShippedProfile 逐字抽出、注入桩，跑五个分支。
+// 撤销最容易复发的两种失败，都由本测试把守：
+//   ① 有人把补丁加回来（registry 与 IMPLS 又出现 N1）；
+//   ② 构建链又往出厂 profile 清单写这个死键（写了没人读，门禁还会去证明「我们写了一个死键」）。
+// 判据取的是**真产物**（随版夹具），不是注释里的说法。
 //
 // 用法：node scripts/patches/tests/patch-reload-startup-n1.test.mjs
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { versionedFixture } from './lib/fixture.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(here, '..', '..', '..')
-const TARGET = 'usr/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js'
-const FIXTURE = join(here, 'fixtures', 'dsh-app-boot-0.1.5-rc.1', 'lib', 'index.js')
-
 const failures = []
-function check(label, ok, detail) {
+const check = (label, ok, detail) => {
   console.log((ok ? 'PASS  ' : 'FAIL  ') + label + (ok || detail === undefined ? '' : ' -> ' + detail))
   if (!ok) failures.push(label)
 }
-function extractFunction(source, signature) {
-  const start = source.indexOf(signature)
-  if (start < 0) throw new Error('function not found: ' + signature)
-  let depth = 0
-  for (let i = source.indexOf('{', start); i < source.length; i += 1) {
-    if (source[i] === '{') depth += 1
-    else if (source[i] === '}') {
-      depth -= 1
-      if (depth === 0) return source.slice(start, i + 1)
-    }
-  }
-  throw new Error('unbalanced braces for ' + signature)
+
+const registry = JSON.parse(readFileSync(join(here, '..', 'registry.json'), 'utf8'))
+check('registry 里没有 perf-patch-reload-N1', !registry.patches.some((p) => p.id === 'perf-patch-reload-N1'))
+
+const impl = readFileSync(join(here, '..', 'apply-patches.mjs'), 'utf8')
+check('apply-patches 里没有 N1 实现', !impl.includes("'perf-patch-reload-N1'"))
+check('apply-patches 里不再有 patchReload 锚点（撤销而非重锚）', !impl.includes('patchReload'))
+
+// 真产物面：rc.1 的 dsh-app-boot 必须完全不认识这个键——它一旦被上游悄悄恢复，上面的「已撤销」
+// 断言就该翻红重开这条链，而不是让补丁留在冷板凳上。
+const boot = readFileSync(versionedFixture('dsh-app-boot', 'lib', 'index.js'), 'utf8')
+check('rc.1 dsh-app-boot 无 patchReload（撤销前提仍成立）', !boot.includes('patchReload'),
+  '上游又引入该键 => 重开 A1 评估，别直接恢复补丁')
+
+const builder = readFileSync(join(repoRoot, 'scripts', 'build-snapshot-013.mjs'), 'utf8')
+// 只判可执行行：撤销说明本身就要提这个键名，判全文等于自己给自己埋假红。
+const builderCode = builder.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+check('build-snapshot 不写 patchReload', !/\.patchReload\s*=[^=]/.test(builderCode) && !builderCode.includes('seedProfilePatchReload'))
+const seed = readFileSync(join(repoRoot, 'scripts', 'lib', 'profile-seed.mjs'), 'utf8')
+check('profile-seed 改为剥死键（DEAD_PROFILE_KEYS 含 patchReload）',
+  /DEAD_PROFILE_KEYS\s*=\s*\[[^\]]*'patchReload'/.test(seed))
+
+if (failures.length) {
+  console.error(`patch-reload-startup-n1: ${failures.length} 项失败`)
+  process.exit(1)
 }
-
-const scratch = mkdtempSync(join(tmpdir(), 'n1-test-'))
-try {
-  const target = join(scratch, TARGET)
-  mkdirSync(dirname(target), { recursive: true })
-  // FX-E19：fixture 索引 LF 而工作树在 core.autocrlf=true 下是 CRLF——按 LF 归一后写夹具。
-  writeFileSync(target, readFileSync(FIXTURE, 'utf8').replace(/\r\n/g, '\n'))
-
-  const apply = () => spawnSync(process.execPath,
-    [join(repoRoot, 'scripts', 'patches', 'apply-patches.mjs'), scratch, '--apply', '--scope', 'engine', '--only', 'perf-patch-reload-N1'],
-    { encoding: 'utf8' })
-  const applied = apply()
-  check('apply-patches exits 0', applied.status === 0, (applied.stderr || '').trim().split('\n').slice(-2).join(' '))
-  const patched = readFileSync(target, 'utf8')
-  check('marker 数 = 2（模板 + 归一化）', (patched.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length === 2,
-    'count=' + ((patched.match(/dsh-mobile patchReload normalization \(N1\)/g) || []).length))
-  const parse = spawnSync(process.execPath, ['--check', target], { encoding: 'utf8' })
-  check('patched file parses', parse.status === 0, (parse.stderr || '').split('\n')[0])
-
-  const webIndex = patched.indexOf('\tweb: {')
-  const webBlock = patched.slice(webIndex, patched.indexOf('\n\t},', webIndex))
-  check('web 模板 patchReload = startup', /patchReload: "startup"/.test(webBlock), webBlock.replace(/\n/g, ' | ').slice(0, 160))
-  check('DEFAULT_PROFILE_PATCH_RELOAD 未被误改（自定义 profile 仍 live）', patched.includes('const DEFAULT_PROFILE_PATCH_RELOAD = "live";'))
-
-  apply()
-  check('re-apply is idempotent', readFileSync(target, 'utf8') === patched)
-
-  // ── 行为：抽出打过补丁的 normalizeShippedProfile，注入桩驱动五个分支 ──
-  const src = extractFunction(patched, 'function normalizeShippedProfile(name, dir, manifest) {')
-  const WEB = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
-  const HEADLESS = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-headless']
-  const sameBundles = (a, b) => JSON.stringify(a) === JSON.stringify(b)
-  const written = []
-  const factory = new Function('INSTALLATION_OWNED_PROFILE_TUPLES', 'PROFILE_TEMPLATES', 'sameBundles', 'writeProfileManifest',
-    src + '\nreturn normalizeShippedProfile;')
-  const normalize = factory(
-    { headless: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-headless'] },
-    { web: { bundles: WEB, patchReload: 'startup' }, headless: { bundles: HEADLESS, patchReload: 'startup' } },
-    sameBundles,
-    (dir, manifest) => written.push({ dir, manifest }),
-  )
-  const reloadOf = (manifest) => manifest.dsh.profile.patchReload
-
-  const c1 = normalize('web', '/p', { dsh: { profile: { bundles: WEB } } })
-  check('全新安装/键缺失：写入 startup', reloadOf(c1) === 'startup', JSON.stringify(reloadOf(c1)))
-  check('全新安装：确实写回磁盘', written.length === 1)
-
-  const c2 = normalize('web', '/p', { dsh: { profile: { bundles: WEB, patchReload: 'live' } } })
-  check('存量升级（显式 live + 当前元组）：归一化为 startup（P-AC-24）', reloadOf(c2) === 'startup', JSON.stringify(reloadOf(c2)))
-
-  const before = written.length
-  const c3 = normalize('web', '/p', { dsh: { profile: { bundles: WEB, patchReload: 'startup' } } })
-  check('已是 startup：不写回（幂等）', reloadOf(c3) === 'startup' && written.length === before)
-
-  const c4 = normalize('web', '/p', { dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], patchReload: 'live' } } })
-  check('用户自建元组：一律不动', JSON.stringify(c4) === JSON.stringify({ dsh: { profile: { bundles: ['@deepseek-ai/dsh-base'], patchReload: 'live' } } }),
-    JSON.stringify(c4))
-
-  const c5 = normalize('headless', '/p', { dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', '@deepseek-ai/dsh-headless'], patchReload: 'live' } } })
-  check('退役元组迁移：live 也归一化为 startup', reloadOf(c5) === 'startup', JSON.stringify(reloadOf(c5)))
-} finally {
-  rmSync(scratch, { recursive: true, force: true })
-}
-
-console.log(failures.length === 0 ? '\nALL PASS' : '\nFAILED ' + failures.length + ': ' + failures.join('; '))
-process.exit(failures.length === 0 ? 0 : 1)
+console.log('patch-reload-startup-n1: 撤销不变量全部成立')

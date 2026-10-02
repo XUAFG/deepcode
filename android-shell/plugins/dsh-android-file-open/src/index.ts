@@ -2,9 +2,9 @@
  * dsh-android-file-open — 文件直达会话（PRD F5，M3.5 + 消费端补齐 2026-08-23）
  *
  * 引擎侧职责：接收壳侧拷贝完成的临时工作区路径 → 校验（必须在临时工作区内）→
- * 入队并**当场创建强制新会话**（种子消息携带 @文件路径——DSH 文件引用格式，
- * read/视觉链路按 <path> 取用；会话 cwd = 临时工作区，模型只见工作区内路径）→
- * 提供 GET 清单 + claim 端点（前端消费/删除）→ 状态工具。
+ * 入队并创建一个强制新会话，但**不发送**任何种子消息。前端仅在成功导航到该会话后，
+ * 以短时 ticket 读取源字节并复用上游 composer 的 file-upload 流程，形成一个未发送的
+ * `file attachment` 草稿。绝不把 `@路径` 写成 user message。
  *
  * 强制新会话语义：绝不并入既有会话（PRD F5.2 硬规则）——本插件不提供任何"附加到现有会话"路径。
  *
@@ -12,17 +12,17 @@
  * 后都会补建——已建条目不重复创建（同一会话绝不重复开）。消费（claim）只由前端在
  * 确实把界面路由到新会话后执行。
  */
-import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, rmSync, existsSync, realpathSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, appendFileSync, readFileSync, readdirSync, rmSync, existsSync, realpathSync, statSync, createReadStream } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { join, resolve, sep, basename } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 // FX-205.1：三条 exact 路由与 dsh-android-bridge 控制队列共用同一枚壳侧控制令牌
 // （shellControlToken = controlTokenFrom(env, 壳侧 prefs)）；鉴权实现见 route-auth.ts。
 import { shellControlToken } from '@dsh-android/dsh-android-bridge'
 import {
-  CONTROL_TOKEN_HEADER,
   authorizeIncomingRoute,
+  sendIncomingRouteRejection,
   type AuthOptions,
   type AuthResult,
   type ConnectionFace,
@@ -96,17 +96,15 @@ function ownedInsideWorkspace(owned: string): string | null {
   return real
 }
 
-/** 宿主会话服务最小面（类型局部收敛：跨包服务面走 cast，不引入 dsh-session 编译期整体）。 */
+/** Host session service minimum: a blank session is created without calling prompt or append. */
 interface HostSession {
-  append(type: string, payload: Record<string, unknown>, opts?: { surfaceOp: string }): void
   id: unknown
 }
 interface HostSessions {
   create(id?: unknown, opts?: { meta?: Record<string, unknown> }): HostSession
-  get?(id: unknown): HostSession | undefined
 }
 
-/** workspaceRegistry 最小面（注册临时工作区让面板可见；R2 需要 list/delete 做 canonical 解析与自愈）。 */
+/** workspaceRegistry minimum face (registers the temporary workspace for navigation). */
 interface HostWorkspace {
   id: unknown
   path: string
@@ -119,39 +117,83 @@ interface HostWorkspaceRegistry {
   delete?(id: unknown): Promise<boolean>
 }
 
-/**
- * sessionController 最小面（R1：**会话命令面**）。
- * 上游语义（dsh/packages/api/session-controller/src/commands.ts）：
- *  - create({ workspaceId })：铸 durable session-<uuid> + 组合 Agent + attachSession（工作区归属）；
- *  - prompt(request, signal)：admit 一条 user 消息（mode 'queue' = followup 排队，真正起首轮），
- *    signal 必传（index.ts:347 第一行 signal.throwIfAborted()）。
- */
+/** Session-command face used to mint a durable, empty session in its workspace. */
 interface HostSessionController {
   create(request: { workspaceId?: string }): Promise<{ sessionId: string }>
-  prompt(request: {
-    requestId: string
-    sessionId: string
-    mode: 'queue' | 'steer'
-    content: Array<{ type: 'text'; text: string }>
-  }, signal: AbortSignal): Promise<{ accepted: boolean }>
 }
 
+type IncomingState = 'received' | 'session-created'
+
+/** Persistent shell-to-engine queue record. `path` remains host-only and never reaches the Web UI. */
 interface IncomingItem {
+  id: string
   ts: string
   path: string
-  context: string
   forcedNewSession: true
+  state: IncomingState
+  name: string
+  bytes: number
   sessionId?: string
   file?: string
 }
 
+/** Browser-safe metadata for the queue status endpoint and model-visible status tool. */
+interface PublicIncomingItem {
+  entryId: string
+  sessionId?: string
+  state: IncomingState
+  name: string
+  bytes: number
+}
+
+/** One short-lived, process-local stream ticket after the UI has navigated to its blank session. */
+interface DraftLease {
+  entryId: string
+  sessionId: string
+  path: string
+  name: string
+  bytes: number
+  expiresAt: number
+}
+
+const DRAFT_LEASE_MS = 5 * 60_000
+
+/** 本进程启动时刻（模块装配时刻）：更早的未认领记录 = 上个进程残骸（review C10）。 */
+const PROCESS_START_MS = Date.now()
+/** 未认领来件在**本进程内**的寿命：超时未认领即墓碑化（review C10 的 TTL 半边）。 */
+const UNCLAIMED_TTL_MS = 10 * 60_000
+
+function publicItem(item: IncomingItem): PublicIncomingItem {
+  return {
+    entryId: item.id,
+    ...(item.sessionId === undefined ? {} : { sessionId: item.sessionId }),
+    state: item.state,
+    name: item.name,
+    bytes: item.bytes,
+  }
+}
+
 function readItems(): IncomingItem[] {
   const dir = queueDir()
-  return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => {
+  return readdirSync(dir).filter((f) => f.endsWith('.json')).map<IncomingItem | null>((f) => {
     try {
-      const j = JSON.parse(readFileSync(join(dir, f), 'utf8')) as IncomingItem
-      j.file = f
-      return j
+      const value = JSON.parse(readFileSync(join(dir, f), 'utf8')) as Partial<IncomingItem>
+      if (typeof value.path !== 'string' || value.path === '') return null
+      const bytes = typeof value.bytes === 'number' && Number.isFinite(value.bytes) && value.bytes >= 0
+        ? value.bytes
+        : (() => { try { return statSync(value.path).size } catch { return 0 } })()
+      const sessionId = typeof value.sessionId === 'string' && value.sessionId !== '' ? value.sessionId : undefined
+      return {
+        id: typeof value.id === 'string' && value.id !== '' ? value.id : f,
+        ts: typeof value.ts === 'string' ? value.ts : '',
+        path: value.path,
+        forcedNewSession: true,
+        state: value.state === 'session-created' || sessionId !== undefined ? 'session-created' : 'received',
+        name: typeof value.name === 'string' && value.name !== '' ? value.name : basename(value.path),
+        bytes,
+        ...(sessionId === undefined ? {} : { sessionId }),
+        file: f,
+      } satisfies IncomingItem
     } catch {
       return null
     }
@@ -159,22 +201,63 @@ function readItems(): IncomingItem[] {
 }
 
 /**
+ * review C10：未认领草稿的生命周期收口（PLAN 约束：草稿只在当前进程有效，进程重启后不恢复
+ * 草稿；原临时源按 TTL 清理）。
+ *
+ * 现场缺陷：队列记录跨进程复活——用户在草稿落盘前杀掉应用/引擎，下次启动浏览器轮询到
+ * state='received' 的旧记录，会为其**重复新建**临时会话（还可能叠加 createSession 失败重试）。
+ *
+ *  ① mode='boot'：state==='received'（无 durable sessionId）且时间戳早于本进程启动 = 上个进程
+ *     残骸 → 删除队列记录（浏览器之后轮询不到，自然不再补建）。
+ *  ② mode='ttl'：本进程内超过 UNCLAIMED_TTL_MS 仍无人认领 → 同样清理（长驻引擎不无限积压）。
+ * 已认领（session-created + durable id）记录不动：那是真实会话的待附附件，不属草稿面。
+ * 时间戳不可读时保守不动（宁留不误删）。
+ */
+function purgeStaleUnclaimed(mode: 'boot' | 'ttl'): number {
+  const now = Date.now()
+  let purged = 0
+  for (const item of readItems()) {
+    if (!needsSession(item) || item.file === undefined) continue
+    const ts = Date.parse(item.ts)
+    if (Number.isNaN(ts)) continue
+    const stale = mode === 'boot' ? ts < PROCESS_START_MS : ts < now - UNCLAIMED_TTL_MS
+    if (!stale) continue
+    try {
+      rmSync(join(queueDir(), item.file), { force: true })
+      purged += 1
+      ctxLogger?.('dsh-android-file-open')?.info?.('未认领来件过期清理(' + mode + ')：' + item.name + '（草稿仅在当前进程有效）')
+    } catch { /* 删除失败留待下次启动再清 */ }
+  }
+  return purged
+}
+
+/**
  * 强制新会话请求入队（每个文件一条独立清单；会话由 ensureSessions 创建）。
  * 路径边界（H3 修复 2026-08-23）：ws+sep 边界 + realpath 规范化，拒绝跨边界 symlink。
  */
-function enqueueSession(path: string): { ok: boolean; sessionFile: string; message: string } {
+function enqueueSession(path: string): { ok: boolean; entryId?: string; message: string } {
   const dir = queueDir()
   const ws = resolve(tmpWorkspace())
   const real = safeResolveInside(ws, path)
   if (real === null || !existsSync(real)) {
-    return { ok: false, sessionFile: '', message: `路径不在临时工作区内或不存在: ${path}` }
+    return { ok: false, message: '路径不在临时工作区内或不存在' }
   }
-  const sessionFile = join(dir, Date.now() + '-' + Math.random().toString(16).slice(2, 8) + '.json')
-  const context = `此会话处理外部文件：${real}\n\n请先阅读该文件（图片可直接用视觉工具查看），并按用户意图处理。文件已安全拷贝进临时工作区（不引用外部原始路径）；处理完成后可在设置页手动清理临时工作区。`
-  writeFileSync(sessionFile, JSON.stringify({ ts: new Date().toISOString(), path: real, context, forcedNewSession: true }, null, 2))
-  // FX-205.5：受理即记自有临时项（/clean 只删这些）。
+  const entryId = randomBytes(18).toString('base64url')
+  const sessionFile = join(dir, entryId + '.json')
+  const bytes = statSync(real).size
+  const item: IncomingItem = {
+    id: entryId,
+    ts: new Date().toISOString(),
+    path: real,
+    forcedNewSession: true,
+    state: 'received',
+    name: basename(real),
+    bytes,
+  }
+  writeFileSync(sessionFile, JSON.stringify(item, null, 2))
+  // 受理即记自有临时项（/clean 只删这些）。
   recordOwnedTemp(real)
-  return { ok: true, sessionFile, message: '已生成强制新会话请求：' + real }
+  return { ok: true, entryId, message: '已创建空白临时会话请求' }
 }
 
 /** 持久会话 id 形态（命令面铸 session-<uuid>；计数形态 session-N 是存储层原语产物，需自愈重建）。 */
@@ -185,7 +268,7 @@ const INCOMING_TITLE = '临时工作区'
 
 /** 待建判据（R1）：无 sessionId 或**非 durable 形态**（遗留 session-1 条目自愈重建，IX-TW-02）。 */
 function needsSession(item: IncomingItem): boolean {
-  return item.sessionId === undefined || !DURABLE_SESSION_ID.test(item.sessionId)
+  return item.state !== 'session-created' || item.sessionId === undefined || !DURABLE_SESSION_ID.test(item.sessionId)
 }
 
 /**
@@ -287,10 +370,9 @@ function ensureSessions(): Promise<number> {
 }
 
 /**
- * R1：走**会话命令面**建会话并起首轮。
- *  - create({ workspaceId }) → durable session-<uuid> + Agent 组合 + 工作区归属（未分组问题闭环）；
- *  - prompt(..., signal) → 排队首轮（模型未配置等失败时回落存储层 append 并记日志，不漏件也不静默）；
- *  - 命令面缺失（桌面/headless）→ 回落存储层原语并记警告（保留旧行为，绝不静默）。
+ * Build one durable blank session per incoming record. This function deliberately never submits a
+ * prompt and never appends a user/message event: the browser hydrates the ordinary composer draft
+ * only after it has navigated to the returned session.
  */
 async function ensureSessionsOnce(): Promise<number> {
   const sessions = ctxServices.sessions
@@ -301,52 +383,32 @@ async function ensureSessionsOnce(): Promise<number> {
   for (const item of readItems()) {
     if (!item.file || !needsSession(item)) continue
     try {
-      const text = `@${item.path}\n\n${item.context}`
       let sessionId = ''
       if (controller) {
         const value = await controller.create(workspaceId === undefined ? {} : { workspaceId })
         sessionId = String(value?.sessionId ?? '')
       } else {
         const sess = sessions.create(undefined, {
-          // header 的 meta 仅接受白名单键（origin 只允许 "subagent"，实测拒绝自定义值）
+          // Header meta is intentionally limited to the workspace; no source path becomes message text.
           meta: { cwd: tmpWorkspace() },
         })
         sessionId = String(sess.id)
-        ctxLogger?.('dsh-android-file-open')?.warn?.('sessionController 缺面：回落存储层建会话（无 Agent/无工作区归属）')
+        ctxLogger?.('dsh-android-file-open')?.warn?.('sessionController 缺面：无法验证空白会话的 durable id')
       }
-      if (sessionId === '') continue
-      // 种子消息：@绝对路径 = DSH 文件引用约定（read/视觉工具按引用取文件）。
-      // user/message 是 surface-eligible 事件：存储层回落路径必须带 surfaceOp（'append'）。
-      let prompted = false
-      if (controller) {
-        try {
-          await controller.prompt({
-            requestId: `incoming-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`,
-            sessionId,
-            mode: 'queue',
-            content: [{ type: 'text', text }],
-          }, new AbortController().signal)
-          prompted = true
-        } catch (e) {
-          ctxLogger?.('dsh-android-file-open')?.warn?.('首轮 prompt 失败，回落存储层 append: ' + String((e as Error).message))
-        }
-      }
-      if (!prompted) {
-        sessions.get?.(sessionId)?.append('user/message', createUserMessage({
-          content: [{ type: 'text', text }],
-          source: { kind: 'user' },
-        }) as unknown as Record<string, unknown>, { surfaceOp: 'append' })
+      if (!DURABLE_SESSION_ID.test(sessionId)) {
+        ctxLogger?.('dsh-android-file-open')?.warn?.('空白来件会话未得到 durable id，条目保留待重试')
+        continue
       }
       const file = join(queueDir(), item.file)
-      const updated: IncomingItem = { ...item, sessionId }
+      const updated: IncomingItem = { ...item, sessionId, state: 'session-created' }
       delete updated.file
       writeFileSync(file, JSON.stringify(updated, null, 2))
       created++
     } catch (e) {
-      /* 单条失败不阻断其余；下次 POST/apply 再试——落错误文件供诊断 */
+      // One record cannot block the rest; leave it received for the next normal engine boot retry.
       try {
         writeFileSync(join(queueDir(), 'last-error.txt'), String((e as Error).stack ?? e))
-      } catch { /* 诊断文件失败忽略 */ }
+      } catch { /* diagnostic write has no safe recovery path */ }
     }
   }
   return created
@@ -367,54 +429,65 @@ let ctxServices: { sessions?: HostSessions; workspaceRegistry?: HostWorkspaceReg
  * - 任一解析失败（不存在/越界/IO 错误）返回 null。
  */
 function safeResolveInside(ws: string, path: string): string | null {
-  let real: string
+  const wsLex = resolve(ws)
+  const pathLex = resolve(path)
   let wsReal: string
   try {
-    real = resolve(path)
-    const inBound = real === ws || real.startsWith(ws + sep)
-    if (!inBound) return null
+    wsReal = realpathSync(wsLex)
   } catch {
-    return null
+    // Workspace creation is mandatory before queue consumption; if its canonical form cannot be
+    // resolved, preserve the lexical form and fail closed for any alias mismatch.
+    wsReal = wsLex
   }
+  let pathReal: string
   try {
-    wsReal = realpathSync(ws)
+    // Follow symlinks before the containment check so a workspace link cannot escape it.
+    pathReal = realpathSync(pathLex)
   } catch {
-    wsReal = ws
+    // The caller supplies the final existsSync policy. Retain the resolved record path here so
+    // an absent source can be reported as 410 without accepting a foreign lexical prefix.
+    pathReal = pathLex
   }
-  try {
-    // realpath 跟随符号链接：工作区内软链指向外部时，最终落点越界 → 拒绝
-    const rp = realpathSync(real)
-    if (rp === wsReal || rp.startsWith(wsReal + sep)) return rp
-    // 兼容：若文件确在 ws 内但文件名含坏字符被捕获等情形，走边界回退判定
-    return real.startsWith(wsReal + sep) ? real : null
-  } catch {
-    // 文件不存在（realpath ENOENT）：交由调用方 existsSync 判定
-    return real.startsWith(wsReal + sep) ? real : null
-  }
+  return pathReal === wsReal || pathReal.startsWith(wsReal + sep) ? pathReal : null
 }
 
 function tools() {
   const statusTool = defineTool({
     name: 'android_file_incoming_status',
-    description: '文件直达会话队列视图：待/已消费的强制新会话清单（每项含文件路径、会话 id 与初始上下文概览）与临时工作区占用。',
+    description: '外部文件草稿队列的只读元数据：空白新会话是否已创建、文件名与字节数。不会公开临时文件的绝对路径，也不会发送消息。',
     parameters: {},
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
+          // ok/error 是本工具的**错误出口**：队列目录不可读/不可建时（EACCES 等）必须返回
+          // 错误对象，不能抛异常——抛异常会冒到模型侧调用栈（门禁实测：CI 上
+          // `mkdir .../incoming/.sessions` 抛 EACCES，工具被判定为「必须返回错误对象而非抛异常」）。
+          ok: { type: 'boolean' },
           pending: { type: 'number', required: true },
           items: { type: 'array', items: { type: 'object', additionalProperties: true } },
-          tmpWorkspace: { type: 'string' },
+          error: { type: 'string' },
         },
       },
       render: (_args, v: Record<string, unknown>) => [
-        { type: 'text', text: `待消费新会话请求 ${String(v.pending)} 条（工作区 ${String(v.tmpWorkspace)}）` },
+        v.ok === false
+          ? { type: 'text', text: `待处理外部附件草稿读取失败：${String(v.error ?? '未知原因')}` }
+          : { type: 'text', text: `待处理外部附件草稿 ${String(v.pending)} 条` },
       ],
     },
     execute: async () => {
-      const items = readItems()
-      return { pending: items.filter(needsSession).length, items, tmpWorkspace: tmpWorkspace() } as never
+      try {
+        const items = readItems()
+        return { ok: true, pending: items.filter(needsSession).length, items: items.map(publicItem) } as never
+      } catch (e) {
+        return {
+          ok: false,
+          pending: 0,
+          items: [],
+          error: String((e as Error)?.message ?? e),
+        } as never
+      }
     },
   })
   // 注意：注入面（前端消费端）claim 后删除条目；本插件无"并入既有会话"路径（安全边界）。
@@ -427,18 +500,28 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
   const sessions = (ctx as unknown as { sessions?: HostSessions }).sessions
   const workspaceRegistry = (ctx as unknown as { workspaceRegistry?: HostWorkspaceRegistry }).workspaceRegistry
   ctxServices = { sessions, workspaceRegistry }
+  // review C10：装配即清理上个进程的未认领残骸（否则浏览器下次轮询会重复补建临时会话）。
+  try { purgeStaleUnclaimed('boot') } catch { /* 清理失败不阻断装配 */ }
+  // Claim tickets are intentionally process-local. A browser/app restart drops them, which prevents
+  // a previously unsent composer attachment from being reconstructed after restart.
+  const draftLeases = new Map<string, DraftLease>()
+  const leaseFor = (ticket: string): DraftLease | undefined => {
+    const lease = draftLeases.get(ticket)
+    if (lease !== undefined && lease.expiresAt <= Date.now()) {
+      draftLeases.delete(ticket)
+      return undefined
+    }
+    return lease
+  }
+  ctx.effect(() => () => { draftLeases.clear() }, 'dsh-android-file-open: draft stream leases')
   for (const t of tools()) ctx.tools.register(t)
   // F5.1：引擎初始化即确保临时工作区存在（PRD：干净安装后首次启动即存在）
   try {
     mkdirSync(tmpWorkspace(), { recursive: true })
   } catch { /* 工作区由入队路径兜底创建 */ }
-  // F5.1 / issue #60 + R2：登记「临时工作区」——面板可见性靠它；解析期自愈只保留一个
-  // canonical（可 attach）条目，旧的非 canonical 残留按「同目录 + sessionIds 空 + 标题匹配」删除。
-  void incomingWorkspaceId()
-  // 启动即补建（引擎重启后可能残留无 sessionId/非 durable id 的条目——幂等、串行化）
-  void ensureSessions().then((n) => {
-    if (n > 0) ctx.logger?.('dsh-android-file-open')?.info?.('recovered ' + n + ' incoming session(s) after restart')
-  }).catch(() => { /* 补建失败不阻断插件 */ })
+  // Register the temporary workspace before a browser creates its blank Session. The browser-side
+  // Session controller is the only creator because its create() result is locally addressable.
+  void incomingWorkspaceId().catch(() => { /* a later GET retries workspace registration */ })
   const wsvc = (ctx as unknown as { webServer?: { register(r: unknown): () => void } }).webServer
   if (wsvc) {
     // FX-205.1：鉴权依赖实时求值——令牌随壳侧 prefs 变化（重装/清数据后自愈），
@@ -452,8 +535,7 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
       connection: ctx.get('connection') as ConnectionFace | undefined,
     })
     const sendRejection = (res: IncomingRes, rejection: AuthResult): void => {
-      res.writeHead(rejection.code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-      res.end(rejection.body)
+      sendIncomingRouteRejection(res, rejection)
     }
     // FX-205.7：注册即 effect（register 返回 disposer）——热重载/卸载回收路由，不留重复 handler。
     ctx.effect(() => wsvc.register({
@@ -469,6 +551,8 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
         const rejection = authorizeIncomingRoute(req, authOptions())
         if (rejection) { sendRejection(res, rejection); return }
         if (req.method === 'GET') {
+          // review C10：长驻进程内的 TTL 复核（未认领超时即墓碑化，避免无限积压与补建）。
+          try { purgeStaleUnclaimed('ttl') } catch { /* 清理失败不阻断统计 */ }
           const items = readItems()
           // R16：展示临时工作区占用（设置页清理入口用；dir 遍历不含 .sessions）
           let bytes = 0
@@ -480,7 +564,12 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
             }
           } catch { /* 统计失败不阻断 */ }
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-          res.end(JSON.stringify({ ok: true, pending: items.filter(needsSession).length, items, bytes }))
+          res.end(JSON.stringify({
+            ok: true,
+            pending: items.filter(needsSession).length,
+            items: items.map(publicItem),
+            bytes,
+          }))
           return
         }
         if (req.method !== 'POST') {
@@ -516,10 +605,6 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
           try {
             const path = (JSON.parse(body) as { path?: string }).path ?? ''
             const result = enqueueSession(path)
-            if (result.ok) {
-              // R1：命令面建会话可能较慢——不阻塞壳侧投递的 200；失败保留条目待下次补建。
-              void ensureSessions().catch(() => { /* 队列条目保留，下次补建 */ })
-            }
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
             res.end(JSON.stringify(result))
           } catch (e) {
@@ -529,7 +614,8 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
         })
       },
     }))
-    // 消费端点：前端已把界面路由到新会话后删除队列条目（条目名白名单校验，拒绝路径穿越）。
+    // A successful navigation claims one opaque queue entry, deletes its persistent record, and
+    // returns a short-lived process-local ticket. The source path never enters the browser response.
     ctx.effect(() => wsvc.register({
       kind: 'exact',
       path: '/api/android/file-incoming/claim',
@@ -539,11 +625,10 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
         on(_e: string, cb: (b: Buffer) => void): void
         destroy(): void
       }, res: IncomingRes) => {
-        // FX-205.1/.3/.4：拒绝先于 method 判定与任何删除动作。
         const rejection = authorizeIncomingRoute(req, authOptions())
         if (rejection) { sendRejection(res, rejection); return }
         if (req.method !== 'POST') {
-          res.writeHead(405, { 'content-type': 'application/json' })
+          res.writeHead(405, { 'content-type': 'application/json', 'allow': 'POST' })
           res.end(JSON.stringify({ ok: false, error: 'POST only' }))
           return
         }
@@ -552,18 +637,18 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
         const timeout = setTimeout(() => {
           if (settled) return
           settled = true
-          try { req.destroy() } catch { /* noop */ }
-          res.writeHead(413, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ ok: false, error: 'timeout' }))
+          try { req.destroy() } catch { /* request is already terminal */ }
+          res.writeHead(413, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'claim timeout' }))
         }, 5000)
-        req.on('data', (b: Buffer) => {
+        req.on('data', (chunk: Buffer) => {
           if (settled) return
-          body += b.toString()
+          body += chunk.toString()
           if (body.length > 4096) {
             settled = true
-            try { req.destroy() } catch { /* noop */ }
-            res.writeHead(413, { 'content-type': 'application/json' })
-            res.end(JSON.stringify({ ok: false, error: 'body too large' }))
+            try { req.destroy() } catch { /* request is already terminal */ }
+            res.writeHead(413, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'claim body too large' }))
           }
         })
         req.on('end', () => {
@@ -571,25 +656,167 @@ export function apply(ctx: Context, _config: Record<string, unknown> = {}) {
           settled = true
           clearTimeout(timeout)
           try {
-            const file = (JSON.parse(body) as { file?: string }).file ?? ''
-            const name = basename(file)
-            // 白名单：仅允许删除队列目录内的 .json 条目（basename 化后拒绝穿越）
-            if (name !== file || !name.endsWith('.json')) {
-              res.writeHead(400, { 'content-type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: 'invalid entry name' }))
+            const payload = JSON.parse(body) as { entryId?: string; sessionId?: string }
+            const entryId = typeof payload.entryId === 'string' ? payload.entryId : ''
+            const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : ''
+            const item = readItems().find(candidate => candidate.id === entryId)
+            if (item === undefined || item.file === undefined) {
+              res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify({ ok: false, error: 'incoming entry not found' }))
               return
             }
-            const target = join(queueDir(), name)
-            if (target !== join(resolve(queueDir()), name)) {
-              res.writeHead(400, { 'content-type': 'application/json' })
-              res.end(JSON.stringify({ ok: false, error: 'invalid entry path' }))
+            // The browser's official sessions.create() returns a locally-addressable durable id.
+            // Legacy host-created records may carry another id after an app restart; accepting the
+            // browser-selected replacement avoids resurrecting an unsent old draft.
+            if (!DURABLE_SESSION_ID.test(sessionId)) {
+              res.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify({ ok: false, error: 'incoming session is not ready' }))
               return
             }
-            if (existsSync(target)) rmSync(target)
+            const path = safeResolveInside(resolve(tmpWorkspace()), item.path)
+            if (path === null || !existsSync(path)) {
+              res.writeHead(410, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify({ ok: false, error: 'incoming source expired' }))
+              return
+            }
+            const current = statSync(path)
+            if (!current.isFile()) {
+              res.writeHead(410, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify({ ok: false, error: 'incoming source is not a file' }))
+              return
+            }
+            // Claim happens only after the browser successfully opened the target session. Deleting
+            // the record before bytes are fetched intentionally prevents restart-time draft recovery.
+            rmSync(join(queueDir(), item.file))
+            const ticket = randomBytes(24).toString('base64url')
+            draftLeases.set(ticket, {
+              entryId: item.id,
+              sessionId,
+              path,
+              name: item.name,
+              bytes: current.size,
+              expiresAt: Date.now() + DRAFT_LEASE_MS,
+            })
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
-            res.end(JSON.stringify({ ok: true }))
+            res.end(JSON.stringify({ ok: true, entryId: item.id, ticket, name: item.name, bytes: current.size, state: 'draft-hydrating' }))
           } catch (e) {
-            res.writeHead(400, { 'content-type': 'application/json' })
+            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: String((e as Error).message) }))
+          }
+        })
+      },
+    }))
+    // Browser-only stream route. It is authenticated before ticket lookup and keeps the path in the
+    // plugin process; the UI receives raw bytes, then reuses the ordinary file-upload admission path.
+    ctx.effect(() => wsvc.register({
+      kind: 'exact',
+      path: '/api/android/file-incoming/content',
+      handler: async (req: {
+        method?: string
+        url?: string
+        headers?: Record<string, string | string[] | undefined>
+      }, res: IncomingRes & { write(chunk: Buffer): boolean }) => {
+        const rejection = authorizeIncomingRoute(req, authOptions())
+        if (rejection) { sendRejection(res, rejection); return }
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'content-type': 'application/json', 'allow': 'GET', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'GET only' }))
+          return
+        }
+        const ticket = new URL(req.url ?? '', 'http://localhost').searchParams.get('ticket') ?? ''
+        const lease = leaseFor(ticket)
+        if (lease === undefined) {
+          res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'draft ticket expired' }))
+          return
+        }
+        const path = safeResolveInside(resolve(tmpWorkspace()), lease.path)
+        if (path === null || !existsSync(path)) {
+          draftLeases.delete(ticket)
+          res.writeHead(410, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'incoming source expired' }))
+          return
+        }
+        let bytes = 0
+        try {
+          const stat = statSync(path)
+          if (!stat.isFile()) throw new Error('incoming source is not a file')
+          bytes = stat.size
+        } catch (e) {
+          draftLeases.delete(ticket)
+          res.writeHead(410, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: String((e as Error).message) }))
+          return
+        }
+        res.writeHead(200, {
+          'content-type': 'application/octet-stream',
+          'content-length': String(bytes),
+          'content-disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(lease.name),
+          'cache-control': 'no-store',
+        })
+        await new Promise<void>((resolve) => {
+          const stream = createReadStream(path)
+          stream.on('data', (chunk: string | Buffer) => { res.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)) })
+          stream.on('error', () => { res.end(); resolve() })
+          stream.on('end', () => { res.end(); resolve() })
+        })
+      },
+    }))
+    // Finalize the process-local lease only after the browser has placed the File into the composer.
+    ctx.effect(() => wsvc.register({
+      kind: 'exact',
+      path: '/api/android/file-incoming/complete',
+      handler: async (req: {
+        method?: string
+        headers?: Record<string, string | string[] | undefined>
+        on(_e: string, cb: (b: Buffer) => void): void
+        destroy(): void
+      }, res: IncomingRes) => {
+        const rejection = authorizeIncomingRoute(req, authOptions())
+        if (rejection) { sendRejection(res, rejection); return }
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'application/json', 'allow': 'POST', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'POST only' }))
+          return
+        }
+        let body = ''
+        let settled = false
+        const timeout = setTimeout(() => {
+          if (settled) return
+          settled = true
+          try { req.destroy() } catch { /* request is already terminal */ }
+          res.writeHead(413, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+          res.end(JSON.stringify({ ok: false, error: 'completion timeout' }))
+        }, 5000)
+        req.on('data', (chunk: Buffer) => {
+          if (settled) return
+          body += chunk.toString()
+          if (body.length > 2048) {
+            settled = true
+            try { req.destroy() } catch { /* request is already terminal */ }
+            res.writeHead(413, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: false, error: 'completion body too large' }))
+          }
+        })
+        req.on('end', () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timeout)
+          try {
+            const payload = JSON.parse(body) as { ticket?: string; outcome?: string }
+            const ticket = typeof payload.ticket === 'string' ? payload.ticket : ''
+            const lease = leaseFor(ticket)
+            if (lease === undefined) {
+              res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+              res.end(JSON.stringify({ ok: false, error: 'draft ticket expired' }))
+              return
+            }
+            const state = payload.outcome === 'draft-ready' ? 'draft-ready' : 'removed'
+            draftLeases.delete(ticket)
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+            res.end(JSON.stringify({ ok: true, entryId: lease.entryId, state }))
+          } catch (e) {
+            res.writeHead(400, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
             res.end(JSON.stringify({ ok: false, error: String((e as Error).message) }))
           }
         })

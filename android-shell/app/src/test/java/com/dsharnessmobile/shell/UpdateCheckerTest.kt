@@ -50,11 +50,15 @@ class UpdateCheckerTest {
   }
 
   @Test
-  fun assetNameMatchesBuildScriptProductName() {
-    assertEquals("dsh-mobile-apk-v0.13.8-arm64.apk", UpdateChecker.assetName("v0.13.8", "arm64"))
-    assertEquals("dsh-mobile-apk-v0.13.8-x86_64.apk", UpdateChecker.assetName("v0.13.8", "x86_64"))
+  fun assetNameMatchesReleaseProductName() {
+    // 发布资产口径（docs/RELEASE.md 第 6 节）：abi = arm64-v8a | x86_64。
+    // 坑 172：此处曾按 build-apk-013.ps1 的**开发**口径断言 `-arm64.apk`，而 GitHub Release
+    // 的真实资产是 `-arm64-v8a.apk` —— arm64 真机上「检查更新」恒失败（x86_64 同名故不可见）。
+    assertEquals("dsh-mobile-apk-v0.14.1-arm64-v8a.apk", UpdateChecker.assetName("v0.14.1", "arm64"))
+    assertEquals("dsh-mobile-apk-v0.14.1-x86_64.apk", UpdateChecker.assetName("v0.14.1", "x86_64"))
     // tag 无 v 前缀也要归一到同一资产名（GitHub tag 口径不一）
-    assertEquals("dsh-mobile-apk-v0.13.8-x86_64.apk", UpdateChecker.assetName("0.13.8", "x86_64"))
+    assertEquals("dsh-mobile-apk-v0.14.1-arm64-v8a.apk", UpdateChecker.assetName("0.14.1", "arm64"))
+    assertEquals("dsh-mobile-apk-v0.14.1-x86_64.apk", UpdateChecker.assetName("0.14.1", "x86_64"))
   }
 
   @Test

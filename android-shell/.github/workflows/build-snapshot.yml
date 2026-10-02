@@ -30,13 +30,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # ---- checkout：apk 自身 + root 脚本 + 3 插件仓（path 必须在 workspace 内）----
+      # ---- checkout：apk 自身（含全部构建脚本，自包含）+ 3 插件仓（公开，按 ref 检出）----
+      # 注意：本仓**不得**检出私有协调仓——脚本自 0.13.x 起已全量镜像在本仓 scripts/ 下
+      # （inject-snapshot.py / ci-verify-snapshot.py 与协调仓逐字节一致，由协调仓 CI 的
+      # check-patch-mirror 跨仓守门）。
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: kelai141/dsh-mobile
-          token: ${{ secrets.GH_PAT }}   # dsh-mobile 为私有仓库，GITHUB_TOKEN 无跨仓读权限
-          path: dsh-mobile
       - uses: actions/checkout@v4
         with:
           repository: kelai141/dsh-shell-termux
@@ -110,7 +108,7 @@ jobs:
       - name: 快照注入
         run: |
           for abi in arm64 x86_64; do
-            python3 dsh-mobile/scripts/inject-snapshot.py \
+            python3 scripts/inject-snapshot.py \
               "snapshot/snapshot-${abi}.tar.xz" "snapshot/snapshot-${abi}.new.tar.xz" \
               "$GITHUB_WORKSPACE/dsh-shell-termux" "$GITHUB_WORKSPACE/dsh-client-ui-responsive" "$GITHUB_WORKSPACE/dsh-host-web-compat"
             mv "snapshot/snapshot-${abi}.new.tar.xz" "snapshot/snapshot-${abi}.tar.xz"
@@ -120,8 +118,8 @@ jobs:
       - name: 门禁
         run: |
           PLUGINS="$GITHUB_WORKSPACE/dsh-shell-termux $GITHUB_WORKSPACE/dsh-client-ui-responsive $GITHUB_WORKSPACE/dsh-host-web-compat"
-          python3 dsh-mobile/scripts/ci-verify-snapshot.py snapshot/snapshot-arm64.tar.xz aarch64 $PLUGINS
-          python3 dsh-mobile/scripts/ci-verify-snapshot.py snapshot/snapshot-x86_64.tar.xz x86_64 $PLUGINS
+          python3 scripts/ci-verify-snapshot.py snapshot/snapshot-arm64.tar.xz aarch64 $PLUGINS
+          python3 scripts/ci-verify-snapshot.py snapshot/snapshot-x86_64.tar.xz x86_64 $PLUGINS
 
       # ---- 双 ABI APK（每次构建前换快照 + 指纹）----
       - name: 双 ABI APK 构建
