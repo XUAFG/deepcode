@@ -13,14 +13,14 @@ permissions:
 
 jobs:
   build-arm64:
-    name: first-build arm64 (codex/first-deploy)
+    name: first-build arm64 (codex-upstream)
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
       - name: Checkout codex/first-deploy
         uses: actions/checkout@v4
         with:
-          ref: codex/first-deploy
+          ref: codex-upstream
           fetch-depth: 0
 
       - name: Record source commit
