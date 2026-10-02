@@ -99,9 +99,6 @@ class OverlayLiveFeed(private val svc: OverlayService) {
               if (svc.activeSessionId.isEmpty() || s == svc.activeSessionId) {
                 svc.optimisticBusyAt = 0L
                 if (!svc.sessionBusy) { svc.sessionBusy = true; svc.turnStartedAt = System.currentTimeMillis() }
-                // 块H-A1：任一 tool_call = 新一轮已开始 → 清除上一轮的完成位（否则 A 轮完成后
-                // B 轮进行中仍显示「已完成」，详档 §3.1 硬性 2）。
-                svc.onTurnStart()
                 svc.toolCount++
                 // 模板化显示（用户拍板）：live 行自带 name + args（bridge 0.1.1 已在产）——
                 // 思考=Deep diving 扫光；调工具=工具类型+概览。
@@ -111,15 +108,8 @@ class OverlayLiveFeed(private val svc: OverlayService) {
                 // 执行期间面板会挡住被控 App 的坐标命中区（「点列表第2条实点面板」）——
                 // 识别到自动化工具调用即自动收起面板；不自动恢复（用户点球重开），
                 // 避免恢复动作与下一发自动化点击竞态。
-                // S2-13：自动收起必须**有说明**。旧实现静默把面板收掉：用户正看着面板，
-                // 它自己消失了，既不知道是谁干的、也不知道还能不能回来（而且此刻面板已不可见，
-                // 写状态行也没人看得到——所以用 Toast：它在面板收起后仍然可见）。
-                if (svc.currentToolName.startsWith("android_") && svc.expanded) {
-                  svc.hidePanel()
-                  svc.notifyAutoCollapsedForAutomation()
-                }
-                // 0.13.8 G1-2（缺陷 B-2）：状态写入统一走 deriveHalo 唯一权威
-                svc.setHalo(svc.deriveHalo())
+                if (svc.currentToolName.startsWith("android_") && svc.expanded) svc.hidePanel()
+                svc.setHalo(Halo.WORKING)
                 changed = true
               }
             }
@@ -139,23 +129,7 @@ class OverlayLiveFeed(private val svc: OverlayService) {
                 svc.sessionBusy = false
                 svc.toolCount = 0
                 svc.currentToolName = ""; svc.currentToolSummary = ""
-                // 块H-A1 语义标签来源（详档 §3.1）：`ok` 只给布尔（且旧实现曾恒 false），
-                // `kind` 才是权威语义。二者都必须读：
-                //   kind 在场 → 映射为「已完成」/失败类标签（失败不得伪装成完成）；
-                //   只有 ok   → true→「已完成」/false→「结果未知」（不得把失败当成功）；
-                //   都缺      → 不置位，交给权威信号 api-session/status 的默认文案。
-                val kind = j.optString("kind", "")
-                val label = when {
-                  kind.isNotEmpty() -> turnEndLabel(kind)
-                  j.has("ok") -> if (j.optBoolean("ok", false)) "已完成" else "结果未知"
-                  else -> ""
-                }
-                if (label.isNotEmpty()) svc.onTurnEnd(s, label)
-                // 0.13.8 G1-2（缺陷 B-2）：turn_end 同时清理该会话的待答/待审批
-                // （轮次已结束，pending 必然过期——原实现只回白光环，卡片永挂）；
-                // 光环走 deriveHalo 唯一权威（不再直接 IDLE 绕过 PENDING）。
-                svc.panel.dropPendingFor(s)
-                svc.setHalo(svc.deriveHalo())
+                svc.setHalo(Halo.IDLE)
                 changed = true
               }
             }
@@ -171,40 +145,23 @@ class OverlayLiveFeed(private val svc: OverlayService) {
   }
 
   /** 工具参数 JSON → 一行概览（bash=命令 / search=查询 / read·edit=路径；兜底取首个字符串值）。 */
-  private fun toolSummary(argsJson: String): String = toolSummaryOf(argsJson)
-}
-
-/**
- * 工具参数 JSON → 一行概览（**顶层纯函数**，JVM 可直接测）。
- *
- * 为什么抽出来（0.14.1 批 3 / P3-4）：旧实现里这一行是 `take(24)` 硬截断，于是
- * `rm -rf /data/loca` 这样被截断的命令**看起来是一条完整命令**——用户据此判断
- * 「AI 正在跑什么」会得出错误结论（审查档 §4.4）。截断现在必须自己说出来（附 `…`），
- * 而「必须附省略号」这条判据只有在纯函数上才可断言（形态类缺陷靠设备实报太贵）。
- *
- * 顺序即取值优先级：先按已知参数名（命令/查询/模式/路径…）取，再兜底取首个字符串值，
- * 都没有就退化成整个 JSON 的截断形态。
- *
- * @param argsJson - 工具调用的参数 JSON 串。
- * @param max - 概览最大字符数（含省略号）。
- * @returns 单行概览；参数为空串时返回空串（调用方据此不渲染概览行）。
- */
-internal fun toolSummaryOf(argsJson: String, max: Int = 24): String {
-  if (argsJson.isBlank()) return ""
-  return try {
-    val o = JSONObject(argsJson)
-    val key = listOf("command", "query", "pattern", "file_path", "path", "file", "url", "cmd")
-      .firstOrNull { o.has(it) && !o.optString(it).isBlank() }
-    val raw = when {
-      key != null -> o.optString(key)
-      else -> {
-        var first = ""
-        for (k in o.keys()) { val v = o.opt(k); if (v is String) { first = v; break } }
-        if (first.isBlank()) o.toString() else first
+  private fun toolSummary(argsJson: String): String {
+    if (argsJson.isBlank()) return ""
+    return try {
+      val o = JSONObject(argsJson)
+      val key = listOf("command", "query", "pattern", "file_path", "path", "file", "url", "cmd")
+        .firstOrNull { o.has(it) && !o.optString(it).isBlank() }
+      val raw = when {
+        key != null -> o.optString(key)
+        else -> {
+          var first = ""
+          for (k in o.keys()) { val v = o.opt(k); if (v is String) { first = v; break } }
+          if (first.isBlank()) o.toString().take(40) else first
+        }
       }
+      raw.replace(Regex("\\s+"), " ").trim().take(24)
+    } catch (_: Exception) {
+      argsJson.replace(Regex("\\s+"), " ").trim().take(24)
     }
-    UserCopy.truncateWithEllipsis(raw.replace(Regex("\\s+"), " ").trim(), max)
-  } catch (_: Exception) {
-    UserCopy.truncateWithEllipsis(argsJson.replace(Regex("\\s+"), " ").trim(), max)
   }
 }

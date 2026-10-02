@@ -80,16 +80,6 @@ internal fun buildStandardGuideChrome(activity: ComponentActivity, callbacks: Gu
     setTextColor(color(R.color.ds_text_secondary))
     setPadding(0, dp(2f), 0, 0)
   })
-  // S1-13：首屏此前对「这是什么 / 为什么要授权」零解释——用户第一次打开只看到品牌名与
-  // 「内嵌运行时」，随后被要求授权存储，却没有任何一句话说明这是干什么的、权限用来做什么。
-  // 这里补一行**事实陈述**（不是营销文案）：能力面 + 权限面各一句。
-  titleCol.addView(TextView(activity).apply {
-    text = activity.getString(R.string.ds_brand_explain)
-    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-    setTextColor(color(R.color.ds_text_tertiary))
-    setLineSpacing(0f, 1.25f)
-    setPadding(0, dp(4f), 0, 0)
-  })
 
   val versionLabel = TextView(activity).apply {
     setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -97,11 +87,6 @@ internal fun buildStandardGuideChrome(activity: ComponentActivity, callbacks: Gu
     typeface = typeMedium()
     background = DsUi.roundRect(color(R.color.ds_chip), dim(R.dimen.ds_radius_pill))
     setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
-    // S1-14：长版本号（v0.13.7fx-1、带后缀的验收包 v0.14.1-SN-1-13）此前**无 ellipsize**，
-    // 在窄屏上会把左侧标题挤成两行。单行 + 省略号 + 宽度上限（屏幕 34%），标题优先。
-    maxLines = 1
-    ellipsize = TextUtils.TruncateAt.END
-    maxWidth = (res.displayMetrics.widthPixels * 0.34f).toInt()
   }
 
   val brandBlock = LinearLayout(activity).apply {
@@ -219,10 +204,12 @@ internal fun buildStandardGuideChrome(activity: ComponentActivity, callbacks: Gu
   card.addView(progressText)
 
   val runtimeChip = chipView(activity, typeMedium())
-  // S1-7/S1-8/S1-9：存储 chip 的**点击语义与观感都随状态变**，因此构建期不再绑定单一监听
-  // （旧实现无条件绑 onGrantStorage：在「写入失败」与「尚未探测」两种状态下，点了要么无效、
-  // 要么把人送去一个改不了现状的系统页）。监听由 GuidePageRenderer.refreshGuideMeta 按状态安装。
-  val storageChip = chipView(activity, typeMedium())
+  val storageChip = chipView(activity, typeMedium()).apply {
+    isClickable = true
+    isFocusable = true
+    DsUi.bindPressScale(this, 0.97f)
+    setOnClickListener { callbacks.onGrantStorage() }
+  }
   val chipRow = LinearLayout(activity).apply {
     orientation = LinearLayout.HORIZONTAL
     val lp = LinearLayout.LayoutParams(
@@ -303,10 +290,7 @@ internal fun buildStandardGuideChrome(activity: ComponentActivity, callbacks: Gu
     layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
     addView(
       content,
-      FrameLayout.LayoutParams(
-        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-        Gravity.CENTER_HORIZONTAL,
-      ),
+      FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
     )
   }
   root.addView(scroll)
@@ -372,35 +356,6 @@ internal fun buildStandardGuideChrome(activity: ComponentActivity, callbacks: Gu
   }
   root.addView(actionBlock)
 
-  // ── S1-15：`ds_guide_max_width`（440dp）此前**全仓零引用** ────────────────────
-  // 后果：平板/折叠屏/横屏上，状态卡与两枚按钮一律拉满整屏（1600px 宽的一张卡 + 两个半屏按钮），
-  // 眼睛要横跨整屏读一行 13sp 的说明。这里给「内容列」与「操作区」套同一个上限宽度并居中，
-  // 并在可用宽度变化时重算（旋转/分屏/折叠态切换都会改 root 宽度）。
-  val maxContentW = dpix(R.dimen.ds_guide_max_width)
-  val gutter = dpix(R.dimen.ds_guide_gutter)
-  val clamp = { v: View ->
-    val avail = root.width - gutter * 2
-    if (avail > 0) {
-      val want = if (avail > maxContentW) maxContentW else ViewGroup.LayoutParams.MATCH_PARENT
-      val lp = v.layoutParams
-      if (lp != null && lp.width != want) {
-        lp.width = want
-        v.layoutParams = lp
-      }
-    }
-  }
-  root.gravity = Gravity.CENTER_HORIZONTAL
-  root.addOnLayoutChangeListener { _, l, _, r, _, ol, _, or, _ ->
-    if (r - l != or - ol) {
-      clamp(actionBlock)
-      clamp(content)
-    }
-  }
-  root.post {
-    clamp(actionBlock)
-    clamp(content)
-  }
-
   return GuideChrome(
     root = FrameLayout(activity).apply { visibility = View.GONE; root.visibility = View.VISIBLE; addView(root, FrameLayout.LayoutParams(-1, -1)) },
     brandBlock = brandBlock,
@@ -445,34 +400,4 @@ private fun chipView(activity: ComponentActivity, type: android.graphics.Typefac
     val padV = (7 * res.displayMetrics.density).toInt()
     setPadding(padH, padV, padH, padV)
   }
-}
-
-/**
- * 状态 chip 的观感（S1-7）：**可动作**与**纯事实**必须在视觉上分得开。
- *
- * 缺陷现场：runtimeChip（纯事实，不可点）与 storageChip（可点）外观**逐像素相同**，
- * 用户没有任何线索知道哪个能点——只能靠试。修法不是给可点的那枚加个装饰，而是让
- * 「能点」这件事本身有形态：强调色文字 + 同色描边 + 按压反馈；不可点的一枚保持中性灰无描边。
- */
-internal fun styleStorageChip(
-  activity: ComponentActivity,
-  chip: TextView,
-  actionable: Boolean,
-  danger: Boolean = false,
-) {
-  val res = activity.resources
-  val pill = res.getDimension(R.dimen.ds_radius_pill)
-  val hairline = res.displayMetrics.density.toInt().coerceAtLeast(1)
-  // 破坏/故障态（写入失败）保留红调：它虽然也可点，但语义是「出事了」，不是「去做吧」。
-  val ink = activity.getColor(if (danger) R.color.ds_danger else R.color.ds_accent)
-  if (actionable) {
-    chip.setTextColor(ink)
-    chip.background = DsUi.roundRect(activity.getColor(R.color.ds_chip), pill, ink, hairline)
-    DsUi.bindPressScale(chip, 0.97f)
-  } else {
-    chip.setTextColor(activity.getColor(R.color.ds_text_secondary))
-    chip.background = DsUi.roundRect(activity.getColor(R.color.ds_chip), pill)
-  }
-  chip.isClickable = actionable
-  chip.isFocusable = actionable
 }

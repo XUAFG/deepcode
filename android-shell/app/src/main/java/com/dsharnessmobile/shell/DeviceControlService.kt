@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.util.DisplayMetrics
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -215,13 +216,13 @@ class DeviceControlService : AccessibilityService() {
       val restricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
       return JSONObject()
         .put("enabled", enabled)
-        .put("label", UserCopy.A11Y_SERVICE_NAME)
+        .put("label", "DSH 设备控制")
         .put("sdk", Build.VERSION.SDK_INT)
         .put("restrictedSettingsApplies", restricted)
         .put(
           "hint",
           if (enabled) "无障碍服务已开启：设备控制走无障碍通道（语义树 + performAction）"
-          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「" + UserCopy.A11Y_SERVICE_NAME + "」",
+          else "未开启：到 系统设置 → 无障碍 → 已下载的服务 里开启「DSH 设备控制」",
         )
         .put("tokenConfigured", !context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY_TOKEN, null).isNullOrEmpty())
         .toString()
@@ -270,18 +271,6 @@ class DeviceControlService : AccessibilityService() {
     /** 0.13.8 F1b（协议 V2）：真树 DFS 前序行表（**含零尺寸节点**——骨架连续性与深度
      *  连续性的前提，V1 的 nodes 只留有尺寸节点）。纯数据，动作回指用 childPath 重定位。 */
     val rows: List<ControlProtocolV2.Row> = emptyList(),
-    /**
-     * 与 [rows] 同下标的**建树时节点句柄**（0.14.0 模拟器实锤，坑 136）。
-     *
-     * 为什么必须在建树时留一份：无障碍 API 的 `getChild` 是**活视图片段**——`ui_dump` 之后
-     * 列表（RecyclerView）才完成布局/复用，此时按 childPath 重走会得到与建树时不同的子树；
-     * 实测同一份快照内浅层节点可点、深层「显示」行报「行 57 已不存在」，连文本/几何特征匹配
-     * 也失败（那一行在活树里已经不是当时的样子）。
-     *
-     * 所以动作直接复用建树时抓到的 `AccessibilityNodeInfo`（必要时 `refresh()` 一次），
-     * 不再依赖任何「重走」假设。重走只作为兜底，保留给节点已被回收的情形。
-     */
-    val rowNodes: List<AccessibilityNodeInfo?> = emptyList(),
     // 0.13.8 E2：建树时间预算触发 → 部分树 + 显式标注（宁可标注过的半棵树，不给一句超时）
     val truncated: Boolean = false,
   )
@@ -298,139 +287,7 @@ class DeviceControlService : AccessibilityService() {
   @Volatile
   private var lastInvalidateAt = 0L
 
-  /** Last user-owned range observed by a screen operation; a change invalidates all real refs. */
-  @Volatile
-  private var observedScreenScope: ScreenScope? = null
-
-  /** 当前 op 的目标屏幕（handle 内设置，串行队列保证不并发）。 */
-  @Volatile
-  private var activeScreenId: String = ScreenTargets.REAL
-
-  @Volatile
-  private var activeDisplayId: Int = ScreenTargets.REAL_DISPLAY_ID
-
-  /**
-   * 无障碍语义树可读的窗口根：真实屏走 rootInActiveWindow，虚拟屏走该 display 的窗口。
-   *
-   * **0.14.0 模拟器实锤的缺陷（用户测试项目第一项即撞上）**：虚拟屏上已经真实跑起了
-   * 「设置」（`dumpsys accessibility` 明确列出 `title=设置, displayId=31` 的 TYPE_APPLICATION
-   * 窗口），但 `android_ui_dump {screenId:'virtual-1'}` 仍然失败，审计里是 `result:"denied"`。
-   *
-   * 旧实现只做「有 windows 条目 → 遍历取第一个非 null root」，两个薄弱点都会导致假失败：
-   *  1. **窗口顺序不保证**：`getWindowsOnAllDisplays()` 的回序并非按层级/焦点，先撞上 `root==null`
-   *     的装饰窗口就整体放弃（实际那个应用窗口是好的）；
-   *  2. **失败没有原因**：拿不到树时只回一句「暂无可读窗口」，把「窗口尚未 attach」与「该屏没有
-   *     窗口」混为一谈——模型据此判断「虚拟屏没用」而放弃整条路径（正是要消灭的错误决策）。
-   *
-   * 现修法：① 遍历**全部**窗口挑可用 root，优先 focused/active 的（设置页被拉起来后是 active）；
-   * ② 失败时把**采集到的窗口数量与类型**带进返回值，让模型与诊断面能区分「真的没窗口」与
-   *    「有窗口但读不到 root」。
-   */
-  private fun rootFor(displayId: Int): AccessibilityNodeInfo? = rootProbe(displayId).first
-
-  /**
-   * **建树时选中的那个窗口的 id**（`AccessibilityWindowInfo.getId()`）。
-   *
-   * 缺陷形态（0.14.0 模拟器实锤，坑 136）：`android_ui_dump` 拿到 66 个节点、句柄 n52 指向
-   * 壳侧 row 57，紧接着用该 ref 点击却报「行 57 已不存在（页面已变化）」。row 57 明明在
-   * `snapshot.rows`（共 120 行）范围内——**问题是解析时用的根与建树时不是同一棵**：
-   * `nodeAtChildPath` 每次调用都重新 `rootFor()`，而窗口排序偏好 active/focused；
-   * 焦点/IME/装饰窗口一变，选中的窗口就换人，`childPath` 的下标随即指向别的子树。
-   *
-   * 修法：建树时把窗口 id 钉下来，后续所有按路径/句柄的重定位**优先回到同一个窗口**；
-   * 只有该窗口确实消失时才退回通用选择（此时路径本就该失效，报 stale 才是对的）。
-   */
-  @Volatile
-  private var snapshotWindowId: Int = -1
-
-  /**
-   * [rootFor] 的可诊断版本：返回（根, 该屏窗口数, 是否有 active/focused 窗口, 失败原因）。
-   *
-   * 之所以要带出「窗口数」：虚拟屏的失败绝大多数是「屏建了但没在里面起 App」，与
-   * 「App 起了但当前读不到」需要给模型**完全不同**的下一步指引。
-   */
-  private fun rootProbe(displayId: Int): Pair<AccessibilityNodeInfo?, JSONObject> {
-    if (displayId == ScreenTargets.REAL_DISPLAY_ID) {
-      // 真实屏走 rootInActiveWindow，没有「窗口 id」这一层；清掉钉住的虚拟屏窗口，
-      // 避免真实屏的路径解析误用虚拟屏的 pinned id（跨屏切换时必须失效。
-      snapshotWindowId = -1
-      val root = rootInActiveWindow
-      return root to JSONObject().put("displayId", displayId).put("windowCount", if (root != null) 1 else 0)
-        .put("activeWindow", root != null)
-    }
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-      return null to JSONObject().put("displayId", displayId).put("reason", "api-below-30")
-    }
-    val perDisplay = try { getWindowsOnAllDisplays() } catch (t: Throwable) {
-      return null to JSONObject().put("displayId", displayId).put("reason", "windows-api-failed")
-        .put("detail", t.javaClass.simpleName)
-    }
-    val windows = perDisplay[displayId]
-      ?: return null to JSONObject().put("displayId", displayId).put("reason", "no-window-on-display")
-    // 窗口选择策略抽成**纯函数** `WindowPick.order(...)`：可 JVM 单测（坑 136 的回归就在这里），
-    // 也把「钉住建树窗口」这条不变量从 Android API 细节里剥离出来。
-    val facts = windows.map { w ->
-      WindowPick.Fact(
-        id = try { w.id } catch (_: Throwable) { -1 },
-        active = w.isActive,
-        focused = w.isFocused,
-        hasRoot = try { w.root != null } catch (_: Throwable) { false },
-      )
-    }
-    val chosen = WindowPick.order(facts, snapshotWindowId)
-    snapshotWindowId = chosen.id
-    val picked = windows.firstOrNull { try { it.id == chosen.id } catch (_: Throwable) { false } }
-    val pickedRoot = picked?.let { try { it.root } catch (_: Throwable) { null } }
-    if (pickedRoot != null) {
-      return pickedRoot to probeInfo(displayId, windows.size, chosen.active || chosen.focused)
-    }
-    snapshotWindowId = -1
-    var firstRoot: AccessibilityNodeInfo? = null
-    for (window in windows) {
-      val root = try { window.root } catch (_: Throwable) { null }
-      if (root != null) { firstRoot = root; break }
-    }
-    if (firstRoot != null) return firstRoot to probeInfo(displayId, windows.size, false)
-    return null to probeInfo(displayId, windows.size, false).put("reason", "window-root-unavailable")
-  }
-
-  private fun probeInfo(displayId: Int, count: Int, active: Boolean): JSONObject = JSONObject()
-    .put("displayId", displayId).put("windowCount", count).put("activeWindow", active)
-
-  /**
-   * 无障碍窗口选择策略（**纯函数**，与 Android API 解耦以便 JVM 单测）。
-   *
-   * 不变量（坑 136）：**一旦某窗口被用来建树，后续所有按 childPath 的重定位都必须回到同一窗口**。
-   * 理由：`childPath` 是「在这棵树里每次取第 N 个子节点」的下标序列，换一棵树就是换了一套坐标系；
-   * 而窗口的 active/focused 标志会随焦点转移/IME 出现而变——只按标志选，就会在点击那一刻选中另一个窗口，
-   * 于是 dump 刚刚给出的 row 57 立刻报「已不存在」。
-   */
-  internal object WindowPick {
-    /** 单个窗口的判别事实（从 AccessibilityWindowInfo 摘出，避免直接依赖 Android 类型）。 */
-    data class Fact(val id: Int, val active: Boolean, val focused: Boolean, val hasRoot: Boolean)
-
-    /**
-     * 选出本次要用的窗口。
-     *
-     * 规则（按优先级）：
-     *   ① `pinnedId` 仍在场且有 root → **恒选它**（建树用的那棵树，坐标系统一）；
-     *   ② 否则挑 active → focused → 第一个有 root 的窗口，并把 id 作为新的 pin。
-     * 只考虑 `hasRoot` 的窗口：`root == null` 的装饰窗口取不到树。
-     *
-     * @return 被选中的窗口；没有任何可用窗口时返回 id=-1 的占位。
-     */
-    fun order(facts: List<Fact>, pinnedId: Int): Fact {
-      val usable = facts.filter { it.hasRoot }
-      val fallback = Fact(-1, false, false, false)
-      if (usable.isEmpty()) return fallback
-      if (pinnedId >= 0) {
-        usable.firstOrNull { it.id == pinnedId }?.let { return it }
-      }
-      return usable.firstOrNull { it.active }
-        ?: usable.firstOrNull { it.focused }
-        ?: usable.first()
-    }
-  }
+  private var poller: ControlPoller? = null
 
   /** 0.13.8 E4：服务代次（onServiceConnected 递增；诊断用——重连后缓存全部作废的观测点）。 */
   @Volatile
@@ -446,11 +303,13 @@ class DeviceControlService : AccessibilityService() {
     setEnabledFlag(this, true)
     token(this)
     invalidated = true
-    // 0.14.0 承载拆离：轮询由 ControlCarrier 持有（随前台引擎服务起停）；本服务只登记为
-    // 语义/输入类 op 的处理器。a11y 关闭时队列照跑，browser*/vd* 不再随之不可达。
-    ControlCarrier.a11y = this
-    ControlCarrier.ensureStarted(this)
-    LogCollector.log(TAG, "accessibility service connected; a11y handler registered")
+    // 0.13.8 #181：先停旧代 poller 再起新代——直接覆盖引用会让旧 daemon 线程
+    // 永不可停（进程内长期双轮询，同一请求可能被两个 poller 相继取走）。
+    poller?.stop()
+    val p = ControlPoller(this)
+    poller = p
+    p.start()
+    LogCollector.log(TAG, "accessibility service connected; control channel online")
   }
 
   override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -482,12 +341,12 @@ class DeviceControlService : AccessibilityService() {
   }
 
   private fun teardown() {
-    if (ControlCarrier.a11y === this) ControlCarrier.a11y = null
+    poller?.stop()
+    poller = null
     instance = null
     synchronized(lock) { snapshot = null }
-    observedScreenScope = null
     setEnabledFlag(this, false)
-    LogCollector.log(TAG, "accessibility service disconnected; a11y handler unregistered")
+    LogCollector.log(TAG, "accessibility service disconnected; control channel offline")
   }
 
   // ── 快照 ──────────────────────────────────────────────────────────────
@@ -496,14 +355,10 @@ class DeviceControlService : AccessibilityService() {
     synchronized(lock) {
       val current = snapshot
       if (!force && !invalidated && current != null) return current
-      // 重建即重钉：旧 pin 属于旧树，留着会让新树误用旧窗口的坐标系。
-      snapshotWindowId = -1
-      val root = rootFor(activeDisplayId) ?: return null
+      val root = rootInActiveWindow ?: return null
       val nodes = LinkedHashMap<String, AccessibilityNodeInfo>()
       val bounds = HashMap<String, Rect>()
       val rows = ArrayList<ControlProtocolV2.Row>(512)
-      // 与 rows 同下标的建树期节点句柄（见 Snapshot.rowNodes 说明）。
-      val rowNodes = ArrayList<AccessibilityNodeInfo?>(512)
       var count = 0
       // 0.13.8 E2：建树时间预算（3s）——超预算返回部分树并显式标注 truncated，
       // 宁可给一棵标注过的半棵树，也不给一句超时（V2 §4.1）。
@@ -527,7 +382,6 @@ class DeviceControlService : AccessibilityService() {
         if (node.isFocused) flag = flag or ControlProtocolV2.F_FOCUSED
         if (node.isSelected) flag = flag or ControlProtocolV2.F_SELECTED
         if (node.isEnabled) flag = flag or ControlProtocolV2.F_ENABLED
-        rowNodes.add(node)
         rows.add(
           ControlProtocolV2.Row(
             path = path,
@@ -556,7 +410,7 @@ class DeviceControlService : AccessibilityService() {
       val metrics = screenSize()
       val fresh = Snapshot(
         generation.incrementAndGet(), rotation(), metrics.first, metrics.second,
-        nodes, bounds, rows, rowNodes, truncated,
+        nodes, bounds, rows, truncated,
       )
       snapshot = fresh
       invalidated = false
@@ -564,36 +418,18 @@ class DeviceControlService : AccessibilityService() {
     }
   }
 
-  /**
-   * issue #258：坐标归一化的**基准尺寸**（单一真源）。
-   *
-   * 本函数此前直接返回 `currentWindowMetrics`（= 当前**窗口**）：分屏 / 自由窗口 / 悬浮窗下
-   * 它是窗口尺寸而非整屏尺寸，于是 `nx=0.712` 被换算到 0.712*733=522（屏幕左侧），
-   * DSH 自身浮窗（x∈[1438,2144]）整块点不到。判定与取数现在全部收在 [CoordBasisPolicy]
-   * （纯函数判定 + 可注入取数，反证用例见 `CoordBasisPolicyTest`）。
-   *
-   * 四条消费路径共用本函数：click（[handleClick]）、longClick（[handleLongClick]）、
-   * 快照回显的 screen 字段（[buildSnapshot]）、滚动兜底手势（[handleScroll]）——
-   * 任一条漏改都会让同一个缺陷换条路复发，故不允许各写一份换算。
-   */
-  private fun coordBasis(): CoordBasisPolicy.Basis = CoordBasisPolicy.screenBasis(this)
-
   private fun screenSize(): Pair<Int, Int> {
-    val basis = coordBasis()
-    return basis.width to basis.height
+    val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      val b = wm.currentWindowMetrics.bounds
+      b.width() to b.height()
+    } else {
+      val metrics = DisplayMetrics()
+      @Suppress("DEPRECATION")
+      wm.defaultDisplay.getRealMetrics(metrics)
+      metrics.widthPixels to metrics.heightPixels
+    }
   }
-
-  /**
-   * issue #258：把本次动作**实际使用的归一化基准**并进返回值（工具层据此回显）。
-   *
-   * 这是 issue 明确要求的一条：回显基准能让同类缺陷下次自证——收到返回的人不必再去猜
-   * 「这个 nx 是按窗口还是按屏幕算的」，也能立刻看出「basis=window-current 意味着本机没给出
-   * 整屏尺寸、nx 可能偏左」。
-   */
-  private fun withBasis(result: JSONObject, basis: CoordBasisPolicy.Basis): JSONObject = result
-    .put("basis", basis.wire)
-    .put("basisWidth", basis.width)
-    .put("basisHeight", basis.height)
 
   private fun rotation(): Int {
     val wm = getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -608,7 +444,7 @@ class DeviceControlService : AccessibilityService() {
   /** 按路径重新定位节点（不复用快照里的节点对象——页面可能已重建）。 */
   private fun nodeAtPath(path: String): AccessibilityNodeInfo? {
     if (path.isEmpty()) return null
-    var node: AccessibilityNodeInfo? = rootFor(activeDisplayId) ?: return null
+    var node: AccessibilityNodeInfo? = rootInActiveWindow ?: return null
     for (segment in path.split('.')) {
       val index = segment.toIntOrNull() ?: return null
       val current = node ?: return null
@@ -622,17 +458,7 @@ class DeviceControlService : AccessibilityService() {
 
   /** 执行一个队列请求；返回 null 表示成功（数据由调用方组装）。 */
   fun handle(op: String, args: JSONObject): JSONObject {
-    // 0.14.1 块G F4（注释更正）：本服务**已承载虚拟屏**——`realScreenScopeError` 会经
-    // `VdisplayController.displayIdForAlias` 解析 `virtual-N` 的动态 displayId 并把
-    // `activeScreenId/activeDisplayId` 固定到该屏（见下方 realScreenScopeError 与
-    // VdisplayController 的注册表）。一切内容读取与动作仍**先过范围门**（范围不含时结构化拒绝，
-    // 绝不静默回退 display 0），但「虚拟屏不可用 / 永不路由到 caller 给的 display id」的旧述已失真：
-    // caller 给的 displayId 对真实屏被拒（screen-display-mismatch），虚拟屏则一律由壳侧注册表裁决。
-    if (op in REAL_SCREEN_OPS) {
-      val scopeError = realScreenScopeError(args)
-      if (scopeError != null) return scopeError
-    }
-    val result = when (op) {
+    return when (op) {
       "snapshot" -> handleSnapshot(args)
       "click" -> handleClick(args)
       "longClick" -> handleLongClick(args)
@@ -644,128 +470,40 @@ class DeviceControlService : AccessibilityService() {
       "nodeText" -> handleNodeText(args)
       "webSnapshot" -> handleWebSnapshot(args)
       "webAction" -> handleWebAction(args)
-      // ── 六面登记链已冻结、壳侧实现落地（browser* / vd*）：**必须逐条写分支** ──
-      // 门禁 A 项断言「handle 分支集合 == SUPPORTED_OPS」；每个 op 单独一行，静态门禁按行首
-      // 引号解析分支名（多值分支行会漏项）。browser* 不进 A11Y_OPS（契约 neverA11y），但由本
-      // 服务的控制队列承载；浏览器 WebView 由 MainActivity 持有，经 BrowserHostHolder 路由。
-      "browserCaps" -> BrowserHostHolder.control(op, args)
-      "browserShow" -> BrowserHostHolder.control(op, args)
-      "browserHide" -> BrowserHostHolder.control(op, args)
-      "browserClose" -> BrowserHostHolder.control(op, args)
-      "browserOpen" -> BrowserHostHolder.control(op, args)
-      "browserJs" -> BrowserHostHolder.control(op, args)
-      "browserInput" -> BrowserHostHolder.control(op, args)
-      "browserShot" -> BrowserHostHolder.control(op, args)
-      "browserState" -> BrowserHostHolder.control(op, args)
-      "browserSetUa" -> BrowserHostHolder.control(op, args)
-      "browserViewport" -> BrowserHostHolder.control(op, args)
-      // 0.14.0 多页签（AI 同时控制多个网页；UI 只是给人看的视图）
-      "browserTabs" -> BrowserHostHolder.control(op, args)
-      "browserFollowTab" -> BrowserHostHolder.control(op, args)
-      "browserCloseTab" -> BrowserHostHolder.control(op, args)
-      // Virtual-display lifecycle is native/privileged rather than an accessibility action; the
-      // dispatch lives in VdisplayOps so ControlCarrier can serve vd* with a11y off. Branches stay
-      // here verbatim for the six-face registration gate (scripts/check-control-ops.mjs, A 项).
-      "vdCreate" -> VdisplayOps.handle(this, op, args)
-      "vdDestroy" -> VdisplayOps.handle(this, op, args)
-      "vdLaunch" -> VdisplayOps.handle(this, op, args)
-      "vdMoveTask" -> VdisplayOps.handle(this, op, args)
-      "vdInfo" -> VdisplayOps.handle(this, op, args)
-      "vdLaunchApp" -> VdisplayOps.handle(this, op, args)
-      "vdInput" -> VdisplayOps.handle(this, op, args)
-      // 特权 shell 通道同样是 native/privileged 面（0.14.0 §6：替换内置 adb），分发在 ShellOps；
-      // 分支留在 handle 里满足六面登记链门禁（scripts/check-control-ops.mjs, A 项）。
-      "shExec" -> ShellOps.handle(this, op, args)
-      "shPull" -> ShellOps.handle(this, op, args)
-      "shPush" -> ShellOps.handle(this, op, args)
-      "shRemove" -> ShellOps.handle(this, op, args)
+      // ── 六面登记链已冻结、壳侧实现尚未落地（browser* / vd*）：**必须写分支**且 fail-closed ──
+      // 门禁 A 项断言「handle 分支集合 == SUPPORTED_OPS」；若落进兜底的「未知操作」错误分支，
+      // 则「尚未实现」与「op 名打错」在工具层/诊断面同形（DESIGN-PROTOCOL-V2 的教训）。
+      // 注：本条注释刻意不写出兜底分支的字面形态——门禁以该字面量截断 handle 块做集合比对。
+      // 实现落地时逐条替换为真实分支，并同步删除 scripts/control-ops-pending.json 的族条目。
+      "browserCaps" -> unsupported(op)
+      "browserShow" -> unsupported(op)
+      "browserHide" -> unsupported(op)
+      "browserOpen" -> unsupported(op)
+      "browserJs" -> unsupported(op)
+      "browserInput" -> unsupported(op)
+      "browserShot" -> unsupported(op)
+      "browserState" -> unsupported(op)
+      "browserSetUa" -> unsupported(op)
+      "browserViewport" -> unsupported(op)
+      "vdCreate" -> unsupported(op)
+      "vdDestroy" -> unsupported(op)
+      "vdLaunch" -> unsupported(op)
+      "vdMoveTask" -> unsupported(op)
+      "vdInfo" -> unsupported(op)
       else -> error("未知操作 $op")
     }
-    // 成功结果显式标注目标屏幕与动作模式：真实屏 display 0 / 虚拟屏动态 displayId，
-    // actionMode=a11y 表示语义树/ref 可用；coordinate 表示该屏只能坐标操作（见 §4.2）。
-    if (op in REAL_SCREEN_OPS && !result.has("__error")) {
-      result.put("screenId", activeScreenId)
-      result.put("displayId", activeDisplayId)
-      result.put("scope", ScreenScopePrefs.current(this).wire)
-      if (!result.has("actionMode")) result.put("actionMode", "a11y")
-    }
-    return result
   }
 
   /**
-   * 真实屏内容 op = **会读设备屏幕**的那 8 条，与引擎 `screen-scope.ts` 的
-   * `REAL_SCREEN_CONTROL_OPS` 逐条相同（由 `scripts/check-op-registry-parity.mjs` 守相等）。
+   * 已登记但壳侧尚未实现的 op：fail-closed 的**结构化**拒绝。
    *
-   * 2026-09-19 设备实测更正：本集合此前是 **11 条**，多出的 `state`/`webSnapshot`/`webAction`
-   * 是 `control-policy.ts` 的 `A11Y_OPS`（**后端能力**清单）的陈旧拷贝，与「是否读设备屏」无关：
-   *   - `state`（[handleState]）：只回内存快照代次与失效标记，签名不收 args，不读无障碍根/截屏/displayId；
-   *   - `webSnapshot`/`webAction`（[handleWebSnapshot]/[handleWebAction]）：目标是**壳自有 WebView** 的 DOM。
-   * 三条都不带 `screenId` ⇒ 默认 `real` ⇒ 被本范围门拦死；而 `virtual-only` 是缺省范围（fail-closed），
-   * 于是 `android_web_dump`、`android_ui_click`/`android_ui_input` 的 WebView ref 路径、以及点击生效
-   * 校验（`verifyClick` 读 `state`）在缺省范围下一律报 `screen-out-of-scope`——用户实测到的
-   * 「virtual-only 下工具和不存在一样」有一半出自这里。收敛到 8 条即修好。
+   * 保留既有错误通道键 `__error`（消费方 optString("__error") 不变），另附机器可读的
+   * `reason=unsupported` 与 `op`——工具层/设置页据此把「尚未实现」与「op 名打错」分开。
    */
-  private val REAL_SCREEN_OPS = setOf(
-    "snapshot", "click", "longClick", "setText", "scroll", "global", "screenshot", "nodeText",
-  )
-
-  /** A scope transition is a screen barrier: old real-screen refs cannot regain validity later. */
-  private fun observeScreenScope(scope: ScreenScope) {
-    if (observedScreenScope == scope) return
-    observedScreenScope = scope
-    synchronized(lock) { snapshot = null }
-    invalidated = true
-  }
-
-  /**
-   * Enforce the user-owned scope before any existing real-screen handler runs.
-   *
-   * 0.14.1 块G F4（注释更正）：原文称「There is currently no VirtualDisplay implementation…
-   * it is never routed through rootInActiveWindow or a caller-provided display id」——该述已失真。
-   * 现状：虚拟屏**已实现**（`VdisplayController`），本函数对 `virtual-N` 经注册表解析动态
-   * displayId 并固定为本次执行的目标屏（下方 activeScreenId/activeDisplayId 赋值）；
-   * caller 提供的 `displayId` 仅在**真实屏**路径被拒（screen-display-mismatch），
-   * 虚拟屏的 displayId 一律由壳侧注册表裁决，不接受调用方指定。
-   * 不变量保持不变：范围不含该屏 → 结构化拒绝（screen-out-of-scope），绝不静默回退 display 0。
-   */
-  private fun realScreenScopeError(args: JSONObject): JSONObject? {
-    val requested = args.optString("screenId", ScreenTargets.REAL)
-    val scope = ScreenScopePrefs.current(this)
-    observeScreenScope(scope)
-    if (!ScreenTargets.known(requested)) {
-      return error("screen-not-found：未知屏幕 $requested")
-        .put("reason", "screen-not-found")
-        .put("screenId", requested)
-    }
-    if (!scope.allows(requested)) {
-      return error("screen-out-of-scope：用户当前开放范围为 ${scope.wire}，不允许访问 $requested")
-        .put("reason", "screen-out-of-scope")
-        .put("screenId", requested)
-        .put("scope", scope.wire)
-    }
-    if (ScreenTargets.isVirtual(requested)) {
-      // 虚拟屏：语义树/截屏只有无障碍通道可达；displayId 由 VdisplayController 动态分配（永不为 0）。
-      val displayId = VdisplayController.displayIdForAlias(requested)
-        ?: return error("screen-not-found：虚拟屏 $requested 尚未建立或已销毁；请先 android_vdisplay_create")
-          .put("reason", "screen-not-found")
-          .put("screenId", requested)
-          .put("scope", scope.wire)
-      activeScreenId = requested
-      activeDisplayId = displayId
-      return null
-    }
-    if (args.has("displayId") && !args.isNull("displayId") &&
-      args.optInt("displayId", ScreenTargets.REAL_DISPLAY_ID) != ScreenTargets.REAL_DISPLAY_ID
-    ) {
-      return error("screen-display-mismatch：真实屏幕固定为 display 0，拒绝 caller 指定的其它 displayId")
-        .put("reason", "screen-display-mismatch")
-        .put("screenId", ScreenTargets.REAL)
-        .put("displayId", ScreenTargets.REAL_DISPLAY_ID)
-    }
-    activeScreenId = ScreenTargets.REAL
-    activeDisplayId = ScreenTargets.REAL_DISPLAY_ID
-    return null
-  }
+  private fun unsupported(op: String): JSONObject = JSONObject()
+    .put("__error", "暂不支持：$op（壳侧已登记、实现未落地——fail-closed 拒绝）")
+    .put("reason", "unsupported")
+    .put("op", op)
 
   /**
    * 无障碍截屏（API 30+，`AccessibilityService.takeScreenshot`，需 `canTakeScreenshot="true"`）。
@@ -779,11 +517,9 @@ class DeviceControlService : AccessibilityService() {
     // 一次性迁移（issue #127）：≤0.13.5 把截图落在 files/control-shots（引擎读不到），
     // 升级后清掉旧目录，避免历史残留长期占位。
     if (legacyShotDirCleaned.compareAndSet(false, true)) {
-      // 审查 I-9：同类形态一律 NOFOLLOW（截图目录里可能有链）。
-      try { SnapshotFs.deletePath(java.io.File(filesDir, "control-shots")) } catch (_: Throwable) { /* 忽略 */ }
+      try { java.io.File(filesDir, "control-shots").deleteRecursively() } catch (_: Throwable) { /* 忽略 */ }
     }
-    // displayId 由 realScreenScopeError 解析并固定（真实屏 0 / 虚拟屏动态 id），不接受 caller 直接指定。
-    val displayId = activeDisplayId
+    val displayId = args.optInt("displayId", android.view.Display.DEFAULT_DISPLAY)
     val latch = java.util.concurrent.CountDownLatch(1)
     var payload: JSONObject? = null
     val executor = java.util.concurrent.Executor { command -> mainHandler.post(command) }
@@ -921,34 +657,7 @@ class DeviceControlService : AccessibilityService() {
    * `view`（"all" | "target"）由引擎经请求下推（L1 降级阶梯：报文超限时先收窄口径）。
    */
   private fun handleSnapshot(args: JSONObject): JSONObject {
-    val snap = buildSnapshot(force = true) ?: return if (ScreenTargets.isVirtual(activeScreenId)) {
-      // 虚拟屏语义树只有无障碍通道可达，且该屏必须有可读窗口（需在其中启动 App）。
-      // 拿不到树时给出显式的坐标模式拒绝（不静默失败、不回退真实屏），坐标操作仍可用。
-      // 归因必须精确（0.14.0 收官轮用户实报）：旧实现把两种情况混成一句「暂无可读窗口」，
-      // 模型据此判定「虚拟屏没用」而放弃。二者需要**完全不同**的下一步：
-      //   no-window-on-display → 屏建了但确实没在里面起 App → 先 android_app_launch
-      //   window-root-unavailable / activeWindow=false → App 在、但当前读不到 → 等待/前台化后重试
-      val probe = rootProbe(activeDisplayId).second
-      val active = probe.optBoolean("activeWindow")
-      val defaultReason = if (active) "window-root-unavailable" else "virtual-no-window"
-      val reason = probe.optString("reason", defaultReason)
-      val noWindow = reason == "no-window-on-display"
-      val guidance = if (noWindow) {
-        "虚拟屏 " + activeScreenId + " 上确实还没有任何窗口——先 android_app_launch（带 screenId=" + activeScreenId + "）把应用拉上去，再 dump。"
-      } else {
-        "虚拟屏 " + activeScreenId + " 上已有窗口但当前读不到语义树（可能仍在启动/切换中）：等待 1-2 秒后重试 android_ui_dump；或改用坐标操作 android_ui_click（带 x/y + screenId），那条路不需要语义树。"
-      }
-      JSONObject()
-        .put("__error", "虚拟屏 $activeScreenId 无法给出语义树（原因码 $reason）。")
-        .put("reason", reason)
-        .put("screenId", activeScreenId)
-        .put("displayId", activeDisplayId)
-        .put("windowCount", probe.optInt("windowCount", 0))
-        .put("actionMode", "coordinate")
-        .put("guidance", guidance)
-    } else {
-      error("无法获取当前窗口（rootInActiveWindow 为空）——请确认屏幕已点亮且有无障碍可读窗口")
-    }
+    val snap = buildSnapshot(force = true) ?: return error("无法获取当前窗口（rootInActiveWindow 为空）——请确认屏幕已点亮且有无障碍可读窗口")
     val view = if (args.optString("view", "all") == "target") "target" else "all"
     return ControlProtocolV2.encode(
       rows = snap.rows,
@@ -998,19 +707,7 @@ class DeviceControlService : AccessibilityService() {
       if (handle < 0 || handle >= rows.size) {
         return Target.Miss(error("行句柄 $handle 超出快照范围（共 ${rows.size} 行）——请重新 android_ui_dump"))
       }
-      val row = rows[handle]
-      // 解析顺序（坑 136，0.14.0 模拟器实锤）：
-      //   ① **建树时抓到的那个节点句柄**（最可靠——它就是 dump 时看到的那个对象）；
-      //   ② 逐级 childPath 重走（句柄被回收时的兜底，零字符串解析）；
-      //   ③ 文本/描述/类名/几何中心特征匹配（列表复用后的最后一道兜底）。
-      // 之所以要 ①：无障碍 getChild 是活视图片段，dump 之后列表才完成布局/复用，
-      // 重走会落到另一棵子树上——实测同一份快照内浅层可点、深层「显示」行报「行 57 已不存在」。
-      //   **不要用 `refresh()` 的结果做门槛**：实测列表行在 dump 之后 `refresh()` 恒返回 false
-      //   （视图已被回收/重建），但该节点对象对 `performAction` 往往仍然有效——
-      //   用 refresh() 判死活会把「能用」误判成「已失效」，退回重走又必然失败（见上）。
-      //   正确做法：直接把它交给动作，由动作的真实结果决定成败；失败了再走兜底重定位。
-      val stored = synchronized(lock) { snapshot?.rowNodes?.getOrNull(handle) }
-      val node = stored ?: nodeAtChildPath(row.childPath) ?: nodeByFingerprint(row)
+      val node = nodeAtChildPath(rows[handle].childPath)
         ?: return Target.Miss(error("行 $handle 已不存在（页面已变化）——请重新 android_ui_dump"))
       return Target.Hit(node, "row:$handle")
     }
@@ -1020,56 +717,14 @@ class DeviceControlService : AccessibilityService() {
     return Target.Hit(node, path)
   }
 
-  /**
-   * 按子下标路径重定位节点（V2 行句柄寻址；逐级 getChild，无字符串解析）。
-   *
-   * 失败时**不立刻放弃**：现代列表（RecyclerView 等）在两次 `getChild` 之间就可能改变子集
-   * （复用/懒加载），于是同一份快照内浅层节点可点、深层节点却解析失败——0.14.0 模拟器实锤：
-   * 同一次 dump 里 n7（浅层）点击成功，n52（深层，「显示」行）报「行 57 已不存在」。
-   * 因此这里**逐级兜底**：某一级越界或取不到时，退回按「该级应有孩子的特征」在兄弟里找。
-   * 仍找不到才返回 null（此时确实变了，报 stale 是对的）。
-   */
+  /** 按子下标路径重定位节点（V2 行句柄寻址；逐级 getChild，无字符串解析）。 */
   private fun nodeAtChildPath(childPath: IntArray): AccessibilityNodeInfo? {
-    if (childPath.isEmpty()) return rootFor(activeDisplayId)
-    var node: AccessibilityNodeInfo = rootFor(activeDisplayId) ?: return null
-    for (level in childPath.indices) {
-      val index = childPath[level]
-      val direct = if (index >= 0 && index < node.childCount) node.getChild(index) else null
-      node = direct ?: return null
-      if (level == childPath.size - 1) return node
+    var node: AccessibilityNodeInfo = rootInActiveWindow ?: return null
+    for (index in childPath) {
+      if (index < 0 || index >= node.childCount) return null
+      node = node.getChild(index) ?: return null
     }
     return node
-  }
-
-  /**
-   * 按**行特征**重定位节点（childPath 失效时的兜底，0.14.0 模拟器实锤）。
-   *
-   * 判据（四项全等才算命中，避免误点）：文本、内容描述、类名，以及几何中心（容差 2px）。
-   * 之所以可靠：这些值来自**同一份快照**（`buildSnapshot` 与 key 去重用的就是同一组字段），
-   * 而它们描述的是「这个可点目标长什么样」，不依赖易变的子节点下标。
-   *
-   * 只在 childPath 走不通时才调用——正常路径仍是零开销的逐级 getChild。
-   * 找不到返回 null（此时页面确实变了，报 stale 是正确的）。
-   */
-  private fun nodeByFingerprint(row: ControlProtocolV2.Row): AccessibilityNodeInfo? {
-    val root = rootFor(activeDisplayId) ?: return null
-    val cx = row.x + row.w / 2
-    val cy = row.y + row.h / 2
-    var best: AccessibilityNodeInfo? = null
-    fun visit(node: AccessibilityNodeInfo?, depth: Int) {
-      if (node == null || depth > MAX_DEPTH || best != null) return
-      val rect = Rect()
-      node.getBoundsInScreen(rect)
-      val same = (node.text?.toString() ?: "") == row.text &&
-        (node.contentDescription?.toString() ?: "") == row.desc &&
-        (node.className?.toString() ?: "") == row.cls &&
-        kotlin.math.abs((rect.left + rect.width() / 2) - cx) <= 2 &&
-        kotlin.math.abs((rect.top + rect.height() / 2) - cy) <= 2
-      if (same) { best = node; return }
-      for (i in 0 until node.childCount) visit(node.getChild(i), depth + 1)
-    }
-    visit(root, 0)
-    return best
   }
 
   private fun handleClick(args: JSONObject): JSONObject {
@@ -1101,11 +756,10 @@ class DeviceControlService : AccessibilityService() {
       Target.None -> Unit
     }
     if (args.has("nx") && args.has("ny")) {
-      // issue #258：基准 = **整屏**（多窗口下不得用窗口尺寸），并在返回里回显所用基准。
-      val basis = coordBasis()
-      val x = (args.optDouble("nx") * basis.width).toFloat()
-      val y = (args.optDouble("ny") * basis.height).toFloat()
-      return withBasis(tapAt(x, y, "gesture-norm"), basis)
+      val metrics = screenSize()
+      val x = (args.optDouble("nx") * metrics.first).toFloat()
+      val y = (args.optDouble("ny") * metrics.second).toFloat()
+      return tapAt(x, y, "gesture-norm")
     }
     return error("需要 row（行句柄）或 nx/ny")
   }
@@ -1163,11 +817,10 @@ class DeviceControlService : AccessibilityService() {
       Target.None -> Unit
     }
     if (args.has("nx") && args.has("ny")) {
-      // issue #258：与 click 同源同基准（长按走同一条归一化路径，不得只修一处）。
-      val basis = coordBasis()
-      val x = (args.optDouble("nx") * basis.width).toFloat()
-      val y = (args.optDouble("ny") * basis.height).toFloat()
-      return withBasis(pressAt(x, y, durationMs, "gesture-norm-longclick"), basis)
+      val metrics = screenSize()
+      val x = (args.optDouble("nx") * metrics.first).toFloat()
+      val y = (args.optDouble("ny") * metrics.second).toFloat()
+      return pressAt(x, y, durationMs, "gesture-norm-longclick")
     }
     return error("需要 row（行句柄）或 nx/ny")
   }
@@ -1241,7 +894,7 @@ class DeviceControlService : AccessibilityService() {
   }
 
   private fun findFocusedEditable(): AccessibilityNodeInfo? {
-    val root = rootFor(activeDisplayId) ?: return null
+    val root = rootInActiveWindow ?: return null
     fun walk(node: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
       if (node == null || depth > MAX_DEPTH) return null
       if (node.isFocused && node.isEditable) return node
@@ -1323,7 +976,7 @@ class DeviceControlService : AccessibilityService() {
   }
 
   private fun findFirstScrollable(): AccessibilityNodeInfo? {
-    val root = rootFor(activeDisplayId) ?: return null
+    val root = rootInActiveWindow ?: return null
     fun walk(node: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
       if (node == null || depth > MAX_DEPTH) return null
       if (node.isScrollable) return node

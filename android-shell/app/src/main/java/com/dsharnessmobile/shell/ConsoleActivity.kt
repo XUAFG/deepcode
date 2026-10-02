@@ -36,9 +36,6 @@ class ConsoleActivity : ComponentActivity() {
   /** Last status text (re-pushed on onPageFinished; replays status lost before page load). */
   private var lastStatus: String? = null
 
-  /** S1-18：与 lastStatus 配对的状态，页面重放时同样按状态判就绪。 */
-  private var lastState: ConsoleSession.State = ConsoleSession.State.STARTING
-
   private val sessionListener = object : ConsoleSession.Listener {
     override fun onOutput(text: String) {
       handler.post {
@@ -46,30 +43,20 @@ class ConsoleActivity : ComponentActivity() {
       }
     }
 
-    override fun onStatus(state: ConsoleSession.State, text: String) {
+    override fun onStatus(text: String) {
       lastStatus = text
-      lastState = state
-      handler.post { pushStatus(state, text) }
+      handler.post { pushStatus(text) }
     }
 
     override fun onExit(code: Int) {
       lastStatus = "bash 已退出（code $code）"
-      lastState = ConsoleSession.State.EXITED
-      handler.post { pushStatus(ConsoleSession.State.EXITED, lastStatus!!) }
+      handler.post { pushStatus(lastStatus!!) }
     }
   }
 
-  /**
-   * Push status (main thread only).
-   *
-   * S1-18：推的是**状态 + 文案**两个参数，页面按状态判就绪、按文案显示——不再让页面拿文案
-   * 做子串正则（措辞一变就静默错判）。
-   */
-  private fun pushStatus(state: ConsoleSession.State, text: String) {
-    webView.evaluateJavascript(
-      "window.__consoleState && window.__consoleState(" + jsString(state.wire) + "," + jsString(text) + ")",
-      null,
-    )
+  /** Push status (main thread only). */
+  private fun pushStatus(text: String) {
+    webView.evaluateJavascript("window.__consoleStatus(" + jsString(text) + ")", null)
   }
 
   private fun pushInsets() {
@@ -111,7 +98,7 @@ class ConsoleActivity : ComponentActivity() {
       override fun onPageFinished(view: android.webkit.WebView, url: String) {
         super.onPageFinished(view, url)
         pageReady = true
-        lastStatus?.let { pushStatus(lastState, it) }
+        lastStatus?.let { pushStatus(it) }
         pushInsets()
       }
     }
@@ -146,31 +133,7 @@ class ConsoleActivity : ComponentActivity() {
   inner class ConsoleBridge {
     @JavascriptInterface
     fun submit(command: String) {
-      // 缺陷 D（fx-2）：离线安全模式口令。命中 `dsh safe[ on|off|status]` 时**不落 bash**——
-      // 它要动的是壳侧 profile 装配清单（bash 侧既无权限语义也无事务纪律），
-      // 且引擎已死时控制台仍可用，正是这条口令存在的理由。
-      val action = parseSafeCommand(command)
-      if (action == null) {
-        session.writeCommand(command)
-        return
-      }
-      val engine = EngineManager(this@ConsoleActivity)
-      val result = when (action) {
-        SafeAction.ON -> SafeMode.enter(
-          patch = SafeMode.patchFile(engine),
-          homePatch = SafeMode.homePatchFile(engine),
-          autoDir = SafeMode.autoDir(engine),
-          id = SafeMode.newId(),
-        )
-        SafeAction.OFF -> SafeMode.exit(
-          patch = SafeMode.patchFile(engine),
-          homePatch = SafeMode.homePatchFile(engine),
-          autoDir = SafeMode.autoDir(engine),
-        )
-        SafeAction.STATUS -> SafeMode.status(SafeMode.autoDir(engine))
-      }
-      // 回执走既有输出通道（与 bash 输出同一条路径），用户看到的就是他敲的那条命令的结果。
-      sessionListener.onOutput(result.message + "\n" + safeCommandUsage() + "\n")
+      session.writeCommand(command)
     }
 
     @JavascriptInterface

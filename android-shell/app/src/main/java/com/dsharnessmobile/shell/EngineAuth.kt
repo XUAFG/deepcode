@@ -50,105 +50,17 @@ object EngineAuth {
   private const val COOKIE_NAME_PREFIX = "dsh-auth-"
   private const val TOKEN_LINE = "dsh web: "
   internal val TOKEN_RE = Regex("""dsh web: \S*/\?token=([A-Za-z0-9_\-]{40,})""")
-  /**
-   * **脱敏专用**正则（与 [TOKEN_RE] 刻意分开，0.14.1 单测实测抓出的缺陷）：
-   * [TOKEN_RE] 带 `{40,}` 长度下限——那是**提取**令牌时防误命中用的（短串可能是普通文本），
-   * 但把它复用到**脱敏**出口就是 fail-open：令牌短于 40 位时正则不命中 → 原样落盘/展示 → **泄漏**。
-   * 脱敏必须**只要形态像就一律打码**（宁可多打，不可漏打），故此处不设长度下限。
-   * 实测反证：`token=SECRETTOKENVALUE1234567890`（26 位）旧实现完全不替换。
-   * 硬约束不变：只作用于副本/落盘/展示出口，**绝不**改写 `filesDir/engine.log` 本体
-   * （鉴权链 `tokenFromLog` 依赖该行，它用 [TOKEN_RE] 提取，两者互不影响）。
-   */
-  private val REDACT_RE = Regex("""([?&]token=)[A-Za-z0-9_\-]+""")
   private const val SECRET_RECORD_KEY = "client-connection/browser-session"
-
-  /**
-   * 引擎 cookie 时窗的**兜底默认**（天）。
-   *
-   * M.1（apk #272）实测结论（决定本常量存在的原因，勿照抄报告）：
-   * `cookieMaxAgeDays` **不在 settings.yaml 里**——它是 `@deepseek-ai/dsh-client-connection`
-   * 插件的 cordis config 项（`dsh/packages/client/connection/src/index.ts:105/113`：
-   * `cookieMaxAgeDays: z.natural().min(1).default(30)`）。我们的 profile 未覆盖该行
-   * （`scripts/profile-web.cordis.patch.yml` 零命中 connection），web-app bundle 也只配了
-   * `trustedHosts` ⇒ 引擎实际走 schema 默认 30 天。
-   *
-   * 该值**无法**从壳侧配置文件读到（settings.yaml 里根本没有），但它**可从引擎自己的应答观测**：
-   * `GET /?token=` 的 Set-Cookie 带 `Max-Age=<秒>`（设备实测 `Max-Age=2592000` = 30 天）。
-   * 故本常量只作「还没观测到过」时的兜底，真实值以 [observedMaxAgeMs] 为准。
-   */
-  internal const val DEFAULT_COOKIE_MAX_AGE_DAYS = 30L
-
-  /**
-   * 本地提前量：壳侧自铸 cookie 的 expiresAt 比引擎允许的时窗**早**这么久失效。
-   *
-   * 方向很重要（写错就是本缺陷的原形）：壳侧比引擎**早**失效 ⇒ 我们会主动 refresh，
-   * 用户永远看不到 401；若壳侧比引擎**晚**失效 ⇒ 我们以为还有效而引擎已拒绝，
-   * 于是 401 页面卡死且 handleUnauthorized 也无从触发。故必须取减号。
-   */
-  internal const val COOKIE_EXPIRY_SAFETY_MARGIN_MS = 60L * 60 * 1000
-
-  /**
-   * 纯函数：从 Set-Cookie 头解析 `Max-Age=<秒>`（毫秒）。解析不出返回 null。
-   *
-   * 为什么以响应头为真源而不是读配置：见 [DEFAULT_COOKIE_MAX_AGE_DAYS] 的实测结论——
-   * 配置项不在壳侧可读的文件里，而引擎每次令牌交换都把**它自己实际使用的**时窗写在响应头里。
-   * @param setCookie 单条 Set-Cookie 头值。
-   * @returns Max-Age 毫秒；无该属性或非法时 null。
-   */
-  internal fun maxAgeFromSetCookie(setCookie: String?): Long? {
-    if (setCookie == null) return null
-    // Kotlin 原始串里 \s 就是空白：写成 \\s 会去匹配字面反斜杠（本行曾犯此错，被单测抓住）
-    val m = Regex("""(?i)(?:^|;)\s*max-age\s*=\s*(\d+)""").find(setCookie) ?: return null
-    val seconds = m.groupValues[1].toLongOrNull() ?: return null
-    if (seconds <= 0L) return null
-    return seconds * 1000L
-  }
-
-  /**
-   * 纯函数：自铸 cookie 应使用的时窗（毫秒）。
-   *
-   * @param observedMs 观测到的引擎时窗（[maxAgeFromSetCookie] 的结果）；null = 尚未观测到。
-   * @returns 观测值减安全边距；无观测值时用默认 30 天减安全边距；下限 1 分钟（永不为负）。
-   */
-  internal fun mintedMaxAgeMs(observedMs: Long?): Long {
-    val base = observedMs ?: (DEFAULT_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60 * 1000)
-    return (base - COOKIE_EXPIRY_SAFETY_MARGIN_MS).coerceAtLeast(60_000L)
-  }
-
-  /**
-   * 纯判据：日志文件是否可能属于当前引擎代次。
-   *
-   * 未知代次一律拒绝；mtime 只是必要条件，token 提取还要求当前 engine.log 的 creation time
-   * 不早于本代起点，避免触碰旧日志后刷新 mtime 就伪装成新代。轮转文件 engine.log.1/.2
-   * 永远不作为当前代 token 来源。
-   */
-  internal fun logBelongsToCurrentGeneration(
-    logModifiedMs: Long,
-    generationStartMs: Long,
-    slackMs: Long = 5_000L,
-  ): Boolean {
-    if (generationStartMs <= 0L || logModifiedMs <= 0L) return false
-    return logModifiedMs >= generationStartMs - slackMs
-  }
 
   @Volatile private var cached: String? = null
 
   /**
-   * 本代引擎 spawn 起点（epoch ms）；0 = 未知，token 提取必须 fail closed。
-   *
-   * 由 [EngineManager.startWithArgs] 在 rotate 之后、spawn 之前标记；用进程内字段而非 prefs，
-   * 因为代次是进程事实，跨进程读到旧值比没有更危险。
-   */
-  @Volatile private var generationStartAt: Long = 0L
-
-  /**
-   * 日志出口脱敏（0.13.8 #184；0.14.1 改为用 [REDACT_RE]）：把启动令牌替换为
-   * `token=***`，保留 URL 形状与其余信息，不整行删除。
-   * **不得**改回用 [TOKEN_RE] 脱敏：它的 `{40,}` 下限会让短令牌漏网（fail-open，已实测）。
+   * 日志出口脱敏（0.13.8 #184，唯一正则来源 = TOKEN_RE）：把启动令牌行替换为
+   * `?token=***`，保留 URL 形状与其余信息，不整行删除。
    * 硬约束：只允许作用于**副本/落盘/展示出口**（日志、诊断包、引导页摘录），
    * 绝不能改写 filesDir/engine.log 本体——壳侧鉴权链（tokenFromLog）依赖该行。
    */
-  fun redact(text: String): String = text.replace(REDACT_RE, "$1***")
+  fun redact(text: String): String = text.replace(TOKEN_RE, "dsh web: ***?token=***")
 
   @Volatile private var appContext: Context? = null
 
@@ -164,21 +76,6 @@ object EngineAuth {
   }
 
   private fun ctx(): Context? = appContext
-
-  /**
-   * 标记「本代引擎已 spawn」（由 EngineManager 在 spawn 点调用）。
-   *
-   * 这是 token 归属校验的时间锚点：只接受本时刻之后被写过的 engine.log 代次。
-   * @param atMs spawn 时刻（epoch ms）。
-   */
-  fun markGenerationStart(atMs: Long) {
-    generationStartAt = atMs
-    // 换代会作废内存里的 cookie 缓存吗？**不会**：cookie 由持久签名密钥签发，跨重启有效
-    // （类注释已述）。这里只重置「本代起点」，不动 cookie。
-  }
-
-  /** 观测到的引擎 cookie 时窗（毫秒）；null = 尚未观测到。 */
-  @Volatile private var observedMaxAgeMs: Long? = null
 
   /** Current cookie (memory cache first), or null when none is stored. */
   fun cookie(context: Context): String? {
@@ -290,43 +187,37 @@ object EngineAuth {
     }
   }
 
-  /** The launch token from the active engine.log only, when its generation is proven. */
-  fun tokenFromLog(context: Context): String? =
-    tokenFromCurrentLog(File(context.filesDir, "engine.log"), generationStartAt)
+  /** The launch token from the newest engine.log generation, when present. */
+  fun tokenFromLog(context: Context): String? = tokenFromLog(File(context.filesDir, "engine.log"))
 
-  // ── P0: current engine.log token → 303 Set-Cookie ──────────────────────
+  // ── P0: engine.log token → 303 Set-Cookie ──────────────────────────────
 
   private fun exchangeFromLogToken(app: Context): String? {
-    val token = tokenFromCurrentLog(File(app.filesDir, "engine.log"), generationStartAt) ?: return null
+    val token = tokenFromLog(File(app.filesDir, "engine.log")) ?: return null
     return exchange(app, token)
   }
 
-  /** Production extractor, also exercised with real temporary files by JVM tests. */
-  internal fun tokenFromCurrentLog(log: File, generationStartMs: Long): String? {
-    if (!log.isFile || generationStartMs <= 0L) return null
-    val attributes = try {
-      java.nio.file.Files.readAttributes(log.toPath(), java.nio.file.attribute.BasicFileAttributes::class.java)
-    } catch (_: Exception) {
-      return null
-    }
-    val modifiedMs = attributes.lastModifiedTime().toMillis()
-    val createdMs = attributes.creationTime().toMillis()
-    if (!logBelongsToCurrentGeneration(modifiedMs, generationStartMs)) return null
-    if (!logBelongsToCurrentGeneration(createdMs, generationStartMs)) return null
-
-    return try {
-      // Rotated logs are diagnostics only; they can never prove the current generation.
-      val bytes = log.inputStream().use { input ->
-        val tail = ByteArray(64 * 1024)
-        val skipped = input.channel.size() - tail.size
-        if (skipped > 0) input.channel.position(skipped)
-        val read = input.read(tail)
-        tail.copyOf(if (read > 0) read else 0)
+  private fun tokenFromLog(log: File): String? {
+    // Newest generation first: engine.log, engine.log.1, engine.log.2 (0.13.1 W3 rotation).
+    // Tail only — the URL line prints at boot; no need to scan a whole file.
+    for (f in arrayOf(log, File(log.parentFile, "engine.log.1"), File(log.parentFile, "engine.log.2"))) {
+      if (!f.exists()) continue
+      try {
+        val bytes = f.inputStream().use { input ->
+          val tail = ByteArray(64 * 1024)
+          val skipped = input.channel.size() - tail.size
+          if (skipped > 0) input.channel.position(skipped)
+          val read = input.read(tail)
+          tail.copyOf(if (read > 0) read else 0)
+        }
+        val text = String(bytes, StandardCharsets.UTF_8)
+        val last = TOKEN_RE.findAll(text).lastOrNull()?.groupValues?.get(1)
+        if (last != null) return last
+      } catch (_: Exception) {
+        // unreadable generation: try the next one
       }
-      TOKEN_RE.findAll(String(bytes, StandardCharsets.UTF_8)).lastOrNull()?.groupValues?.get(1)
-    } catch (_: Exception) {
-      null
     }
+    return null
   }
 
   private fun exchange(context: Context, token: String): String? {
@@ -343,12 +234,9 @@ object EngineAuth {
         return null
       }
       val cookies = conn.headerFields?.get("Set-Cookie") ?: return null
-      val ours = cookies.firstOrNull { it.startsWith(COOKIE_NAME_PREFIX) } ?: return null
-      // M.1（#272）缺陷 d：引擎把**它自己实际使用的**时窗写在 Set-Cookie 的 Max-Age 上
-      // （设备实测 Max-Age=2592000 = 30 天）。这是壳侧唯一能拿到真值的观测点，
-      // 记下来供自铸 cookie 复用（配置项 cookieMaxAgeDays 不在壳侧可读文件里，见常量注释）。
-      maxAgeFromSetCookie(ours)?.let { observedMaxAgeMs = it }
-      ours.substringBefore(';').takeIf { it.contains('=') }
+      cookies.firstOrNull { it.startsWith(COOKIE_NAME_PREFIX) }
+        ?.substringBefore(';')
+        ?.takeIf { it.contains('=') }
     } catch (e: Exception) {
       Log.w(TAG, "token exchange failed: ${e.javaClass.simpleName}")
       LogCollector.log(TAG, "token exchange failed: reason=" + e.javaClass.simpleName)
@@ -403,13 +291,7 @@ object EngineAuth {
     return try {
       val name = cookieName(AUTHORITY)
       val now = System.currentTimeMillis()
-      // M.1（#272）缺陷 d：旧实现硬编码 30 天，与引擎配置无联动——用户把 cookieMaxAgeDays 调小
-      // 即被静默否决（引擎的校验是 `expiresAt - issuedAt <= maxAgeMilliseconds`，见
-      // dsh/packages/client/connection/src/browser-auth.ts:299）。现在取**观测到的**引擎时窗
-      // 减去安全边距（[COOKIE_EXPIRY_SAFETY_MARGIN_MS]，方向是「壳侧更早失效」——
-      // 这样我们会主动 refresh，用户永远看不到 401；反过来就会卡死在 401 页面）。
-      val maxAgeMs = mintedMaxAgeMs(observedMaxAgeMs)
-      val expiresAt = now + maxAgeMs
+      val expiresAt = now + 30L * 24 * 60 * 60 * 1000 // maxAge default 30d; <= boundary passes
       val payload = JSONObject()
         .put("version", 1)
         .put("authority", AUTHORITY)

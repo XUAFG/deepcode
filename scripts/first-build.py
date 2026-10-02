@@ -19,9 +19,13 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 ANDROID = ROOT / 'android-shell'
 WORK = ROOT / '.tools/first-build'
-ARCHIVE = ROOT / 'downloads/snapshot-arm64-0140.tar.xz'
-BASE_SHA = 'ed24dfcc004725dee4c41e6b9d139fa10e97455af270187794f838327caec28f'
-BASE_URL = 'https://github.com/kelai141/dsh-mobile-apk/releases/download/v0.14.0-preview/snapshot-arm64.tar.xz'
+# 0.14.3 基座：上游不再发布裸快照，改从官方 release APK 内提取 assets/snapshot.tar.xz。
+# 双重锁定：APK sha256 + 提取出的快照 sha256（快照含引擎 @deepseek-ai/dsh 0.2.0-rc.2、
+# @earendil-works/pi-ai 0.87.1，与 android-shell/scripts/patches 的引擎补丁锚点一一对应）。
+ARCHIVE = ROOT / 'downloads/snapshot-arm64-0143.tar.xz'
+SNAPSHOT_SHA = '90a4f445b6cf543fc08e2260f088c30e496cc8698261edefa4aee60e2d9652e7'
+BASE_APK_URL = 'https://github.com/kelai141/dsh-mobile-apk/releases/download/v0.14.3/dsh-mobile-apk-v0.14.3-arm64.apk'
+BASE_APK_SHA = '4d9f66596172cfc4a42cadbf5968ad9b2954947f9059e54bbf6d04371d21b372'
 ASSETS = ANDROID / 'app/src/main/assets'
 NATIVE = ANDROID / 'app/src/main/jniLibs/arm64-v8a'
 PLUGINS = ['dsh-shell-termux', 'dsh-client-ui-responsive',
@@ -51,13 +55,23 @@ def script(name, *args):
 def fetch_base():
     ARCHIVE.parent.mkdir(exist_ok=True)
     if not ARCHIVE.exists():
-        temporary = ARCHIVE.with_suffix('.part')
-        with urllib.request.urlopen(BASE_URL, timeout=120) as response, temporary.open('wb') as output:
-            shutil.copyfileobj(response, output)
-        if digest(temporary) != BASE_SHA:
-            raise RuntimeError('Public snapshot checksum mismatch')
-        temporary.replace(ARCHIVE)
-    if digest(ARCHIVE) != BASE_SHA:
+        apk = ARCHIVE.parent / 'dsh-mobile-apk-v0.14.3-arm64.apk'
+        if not apk.exists() or digest(apk) != BASE_APK_SHA:
+            temporary = apk.with_name(apk.name + '.part')
+            with urllib.request.urlopen(BASE_APK_URL, timeout=600) as response, temporary.open('wb') as output:
+                shutil.copyfileobj(response, output)
+            if digest(temporary) != BASE_APK_SHA:
+                raise RuntimeError('Public base APK checksum mismatch')
+            temporary.replace(apk)
+        if digest(apk) != BASE_APK_SHA:
+            raise RuntimeError('Cached base APK checksum mismatch; do not bypass the lock')
+        with zipfile.ZipFile(apk) as archive:
+            with archive.open('assets/snapshot.tar.xz') as source, ARCHIVE.with_suffix('.part').open('wb') as output:
+                shutil.copyfileobj(source, output)
+        if digest(ARCHIVE.with_suffix('.part')) != SNAPSHOT_SHA:
+            raise RuntimeError('Extracted snapshot checksum mismatch')
+        ARCHIVE.with_suffix('.part').replace(ARCHIVE)
+    if digest(ARCHIVE) != SNAPSHOT_SHA:
         raise RuntimeError('Cached snapshot checksum mismatch; do not bypass the lock')
 
 
@@ -200,7 +214,7 @@ def apk():
                'source_dirty':bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT)),
                'abi':'arm64','apk':str(target.relative_to(ROOT)),'apk_sha256':digest(target),
                'snapshot_sha256':digest(ASSETS/'snapshot.tar.xz'),'native_sha256':expected_native,
-               'base_url':BASE_URL,'base_sha256':BASE_SHA,'models_included':False,
+               'base_url':BASE_APK_URL,'base_apk_sha256':BASE_APK_SHA,'base_sha256':SNAPSHOT_SHA,'models_included':False,
                'device_toolchain_installed':False,'cloud_accounts_included':False}
     (ROOT/'artifacts/first-build.json').write_text(json.dumps(receipt,indent=2)+'\n')
     print('Verified source APK:', target)
