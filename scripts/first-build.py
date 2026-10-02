@@ -84,6 +84,7 @@ def plugins():
 
 def inputs():
     fetch_base()
+    script('fetch-debian-inputs.py', '--abi', 'arm64', '--refresh-packages')  # termux repo is rolling; re-pin before download
     script('fetch-debian-inputs.py', '--abi', 'arm64')
     script('prepare-debian-bundle.py', 'arm64')
 

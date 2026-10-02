@@ -15,6 +15,8 @@ import urllib.request
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--abi', choices=['arm64', 'x86_64'])
 parser.add_argument('--resolve', action='store_true')
+parser.add_argument('--refresh-packages', action='store_true',
+                    help='re-resolve only the Termux package pins (rolling repo drops old files); keeps the rootfs digest pin')
 args = parser.parse_args()
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEST = ROOT / 'downloads/debian'
@@ -54,6 +56,22 @@ if args.resolve:
         lock['architectures'][abi] = {'manifest': manifest_id, 'rootfs': {
             'url': REGISTRY + 'blobs/' + layer['digest'],
             'sha256': layer['digest'].split(':')[1], 'bytes': layer['size']}, 'packages': selected}
+    LOCK.write_text(json.dumps(lock, indent=2) + '\n')
+elif args.refresh_packages:
+    TERMARCH = {'x86_64': 'x86_64', 'arm64': 'aarch64'}
+    lock = json.loads(LOCK.read_text())
+    for abi, config in lock['architectures'].items():
+        if args.abi and abi != args.abi:
+            continue
+        packages = gzip.decompress(get(REPO + f'dists/stable/main/binary-{TERMARCH[abi]}/Packages.gz').read()).decode()
+        selected = []
+        for block in packages.split('\n\n'):
+            fields = dict(line.split(': ', 1) for line in block.splitlines() if ': ' in line and not line.startswith(' '))
+            if fields.get('Package') in ['proot', 'libtalloc', 'libandroid-shmem']:
+                selected.append({'package': fields['Package'], 'version': fields['Version'],
+                                 'url': REPO + fields['Filename'], 'sha256': fields['SHA256']})
+        assert len(selected) == 3, f'{abi}: expected 3 termux packages, got {len(selected)}'
+        config['packages'] = selected
     LOCK.write_text(json.dumps(lock, indent=2) + '\n')
 else:
     lock = json.loads(LOCK.read_text())
